@@ -56,7 +56,16 @@ export function SafetyGate({ platformSettings }: SafetyGateProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[120] bg-[#0b1725]/80 p-4 backdrop-blur-[2px]">
+    // Phase 8.2 — must outrank every other overlay in the app (highest
+    // previously was z-[140], e.g. the recommendation detail modal/explorer
+    // modal), not just the ones that existed when this was first set to
+    // z-[120]. A direct/bookmarked link straight to a detail URL
+    // (?recommendationType=...&recommendationId=...) on a fresh session
+    // mounts that modal at the same time as this gate; without outranking
+    // it, the detail modal's content could visually and interactively cover
+    // the safety gate's own dismissal controls — this is a safety control,
+    // it must always win.
+    <div className="fixed inset-0 z-[150] bg-[#0b1725]/80 p-4 backdrop-blur-[2px]">
       <div
         role="dialog"
         aria-modal="true"

@@ -16,7 +16,17 @@ export type ReportFlowDraft = {
   reportId?: string;
   selectedDestinationId?: string;
   selectedDestinationName?: string;
-  selectedDestinationSource?: "backend" | "manual";
+  /**
+   * Phase 7.2 — `"mock_bundle"` marks a selection made against the governed
+   * Published mock bundle (via `MockContentRepository`, e.g. Triage's "Use
+   * this reporting option"), as distinct from `"backend"` (a live
+   * `ReportDestinationPreview` from `getReportDestinations()`) and
+   * `"manual"` (`buildManualDestinationOptions()`'s triage-service-derived
+   * fallback list in the onboarding Destination step). This is an additive
+   * union member — existing `"backend"`/`"manual"` drafts are unaffected,
+   * no migration of stored data is needed.
+   */
+  selectedDestinationSource?: "backend" | "manual" | "mock_bundle";
   jurisdiction?: string;
   consentGranted?: boolean;
   consentGrantedAt?: string;
@@ -53,6 +63,19 @@ export type ReportFlowDraft = {
   topic?: DashboardCardFlowId;
   starterPrompt?: string;
   evidenceIds: string[];
+  /**
+   * Phase 8 — stable language code selected on the manual flow's Language
+   * stage (e.g. `"en-AU"`), plus the human-readable label captured at
+   * selection time so Review/Consent/Complete never need to re-resolve it
+   * against the catalogue. Never rendered as a raw code on its own.
+   */
+  language?: string;
+  languageLabel?: string;
+  /** Readable community-background selection(s), or the explicit skip label. Never inferred from other fields. */
+  community?: string;
+  communityLabel?: string;
+  /** Which entry point produced this draft — informs copy, not gating logic. */
+  entrySource?: "manual" | "triage";
   updatedAt: string;
 };
 
@@ -236,4 +259,42 @@ export function clearReportFlowDraft(): void {
 
   window.sessionStorage.removeItem(REPORT_FLOW_DRAFT_KEY);
   window.sessionStorage.removeItem(REPORT_FLOW_CURRENT_REPORT_ID_KEY);
+}
+
+/**
+ * Phase 7.2 — the one shared helper every destination-selection surface
+ * (Triage's "Use this reporting option", the onboarding Destination step)
+ * uses to update `selectedDestinationId`/`selectedDestinationName`/
+ * `selectedDestinationSource` on the canonical draft. Never duplicates the
+ * update logic per call site.
+ *
+ * Selecting a *different* destination than the one currently stored
+ * invalidates prior consent and any prepared submission — consenting to
+ * share with destination A must not silently carry over to destination B.
+ * Re-selecting the *same* destination is a no-op beyond refreshing
+ * `updatedAt` (idempotent — never clears consent/submission state that is
+ * still valid for the same selection).
+ */
+export function updateSelectedReportDestination(input: {
+  id: string;
+  name: string;
+  source: NonNullable<ReportFlowDraft["selectedDestinationSource"]>;
+}): ReportFlowDraft {
+  const current = getResolvedReportFlowDraft();
+  const isSameSelection = current?.selectedDestinationId === input.id;
+
+  return mergeReportFlowDraft({
+    selectedDestinationId: input.id,
+    selectedDestinationName: input.name,
+    selectedDestinationSource: input.source,
+    ...(isSameSelection
+      ? {}
+      : {
+          consentGranted: undefined,
+          consentGrantedAt: undefined,
+          consentMode: undefined,
+          preparedSubmission: undefined,
+          latestSubmissionId: undefined,
+        }),
+  });
 }

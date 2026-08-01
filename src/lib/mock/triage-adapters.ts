@@ -6,6 +6,7 @@ import type {
   PublishedSupportOrganisation,
   PublishedSupportProfessional,
 } from "@/lib/contract/published-content-contract";
+import { safeHttpsUrl, safeInternalRoute } from "@/lib/mock/safe-actions";
 import type {
   TriageResourceItem,
   TriageSupportOption,
@@ -38,19 +39,73 @@ export function toDialablePhone(phone: string): string {
   return phone.replace(/[^0-9+]/g, "");
 }
 
+/**
+ * Phase 8.2 — the published-content contract's `jurisdiction` enum values
+ * (`"commonwealth" | "nsw" | "vic" | ...`) are lowercase machine codes, not
+ * user-facing labels. `humanizeKey` alone would title-case them into
+ * malformed abbreviations (e.g. "Nsw"), so this is a dedicated lookup —
+ * the single place every detail view formats a jurisdiction value. Falls
+ * back to `humanizeKey` only for a value outside the known contract enum,
+ * so an unrecognised future value still degrades to something readable
+ * rather than rendering raw.
+ */
+const JURISDICTION_LABELS: Record<string, string> = {
+  commonwealth: "Commonwealth",
+  nsw: "NSW",
+  vic: "VIC",
+  qld: "QLD",
+  wa: "WA",
+  sa: "SA",
+  tas: "TAS",
+  act: "ACT",
+  nt: "NT",
+};
+
+export function formatContractJurisdiction(
+  value: string | undefined | null
+): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return JURISDICTION_LABELS[trimmed] ?? humanizeKey(trimmed);
+}
+
+/** Same formatting, applied to a list (e.g. an organisation's `jurisdictions[]`) and joined for a single-line detail field. */
+export function formatContractJurisdictionList(
+  values: readonly string[] | undefined
+): string | undefined {
+  if (!values || values.length === 0) return undefined;
+  return values.map((value) => formatContractJurisdiction(value)).join(", ");
+}
+
 function joinReasonDetails(reasons: MockMatchReason[]): string | undefined {
   if (reasons.length === 0) return undefined;
   return reasons.map((r) => r.detail).join(" ");
 }
 
+/**
+ * Phase 8.2 — resolves a Microcard CTA's `href` through the exact same
+ * safety validators the detail modal's `MicrocardDetailBody` uses
+ * (`safeHttpsUrl`/`safeInternalRoute` from `safe-actions.ts`), so the card
+ * and its detail view can never diverge on what's safe to link to. An
+ * invalid/unsafe target (or any other CTA type — `start_report`, the
+ * `view_*` in-modal-navigation types, and `none`) resolves to `undefined`
+ * here deliberately: those either have no plain href (they need the
+ * detail modal's nested-navigation/report-flow handling) or aren't safe,
+ * and a card-level link must never be fabricated for them.
+ */
+export function resolveMicrocardCardHref(
+  cta: PublishedMicrocard["cta"]
+): string | undefined {
+  if (cta.type === "open_safe_external_link") return safeHttpsUrl(cta.target);
+  if (cta.type === "open_internal_route") return safeInternalRoute(cta.target);
+  return undefined;
+}
+
 export function microcardToResourceItem(
   record: PublishedMicrocard,
-  _reasons: MockMatchReason[]
+  reasons: MockMatchReason[]
 ): TriageResourceItem {
-  let href: string | undefined;
-  if (record.cta.type === "open_safe_external_link" || record.cta.type === "open_internal_route") {
-    href = record.cta.target;
-  }
+  const href = resolveMicrocardCardHref(record.cta);
 
   return {
     id: record.id,
@@ -59,6 +114,7 @@ export function microcardToResourceItem(
     description: record.summary,
     actionLabel: "Open",
     href,
+    matchReasons: reasons.map((r) => r.detail),
   };
 }
 
@@ -75,7 +131,7 @@ export function rightsContentDisclaimer(record: PublishedRightsContent): string 
 
 export function rightsContentToResourceItem(
   record: PublishedRightsContent,
-  _reasons: MockMatchReason[]
+  reasons: MockMatchReason[]
 ): TriageResourceItem {
   return {
     id: record.id,
@@ -84,6 +140,7 @@ export function rightsContentToResourceItem(
     description: record.summary,
     actionLabel: "Open",
     href: "/dashboard?view=resources",
+    matchReasons: reasons.map((r) => r.detail),
   };
 }
 
@@ -115,6 +172,7 @@ export function organisationToSupportOption(
     jurisdiction,
     availability: record.openingHours,
     reason: joinReasonDetails(reasons),
+    matchReasons: reasons.map((r) => r.detail),
     emergencyOnly: record.emergencyService,
     order,
   };

@@ -1540,8 +1540,18 @@ function LocalAssistantConversationPage({
   const router = useRouter();
   const initialMessageRef = useRef(initialMessage?.trim() ?? "");
   const triageHandoffInFlightRef = useRef(false);
+  // Hydration-safe initial state: the lazy initializer runs during the
+  // client's first (hydrating) render too, not just on mount, so reading
+  // `sessionStorage` here (via `loadDemoConversation`) would return
+  // different messages/suggestions than the server rendered (which always
+  // sees `typeof window === "undefined"` and falls back to
+  // `resetDemoConversation`) — a classic React hydration mismatch. Using
+  // the same deterministic `resetDemoConversation` result for the initial
+  // render on both sides, then restoring any saved session in an effect
+  // below (client-only, post-hydration), keeps server and client HTML
+  // identical on the first pass.
   const [demoState, setDemoState] = useState<DemoConversationState>(() =>
-    loadDemoConversation(initialMessageRef.current)
+    resetDemoConversation(initialMessageRef.current)
   );
   const [composerValue, setComposerValue] = useState("");
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
@@ -1582,6 +1592,20 @@ function LocalAssistantConversationPage({
   const previewUrlRefs = useRef<string[]>([]);
   const shouldRestoreComposerFocusRef = useRef(false);
   const shouldRestoreInputFocusRef = useRef(false);
+
+  // Runs once, after hydration completes, so restoring a previously saved
+  // conversation from sessionStorage never diverges from the server-rendered
+  // (always-reset) HTML. See the `resetDemoConversation` note above.
+  useEffect(() => {
+    const restored = loadDemoConversation(initialMessageRef.current);
+    setDemoState((current) =>
+      restored.stage === current.stage &&
+      restored.messages.length === current.messages.length
+        ? current
+        : restored
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     document.body.classList.add("assistant-conversation-lock");

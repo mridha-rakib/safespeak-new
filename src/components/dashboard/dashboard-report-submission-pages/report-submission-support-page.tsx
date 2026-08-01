@@ -2,6 +2,7 @@
 
 import type { Route } from "next";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   type ReactNode,
   useCallback,
@@ -32,6 +33,10 @@ import { useTranslation } from "react-i18next";
 
 import { ConsentRequiredCard } from "@/components/consent/consent-required-card";
 import { ReportSubmissionFrame } from "./report-submission-frame";
+import {
+  RecommendationDetailModal,
+  type RecommendationDetailSelection,
+} from "./recommendation-detail-modal";
 import { useConsentGate } from "@/hooks/use-consent-gate";
 import {
   getAssistantTriageSource,
@@ -48,6 +53,12 @@ import {
   type MicroEducationItem,
   listPublishedMicroEducation,
 } from "@/lib/microeducation";
+import {
+  parseRecommendationDetailFromSearchParams,
+  withRecommendationDetail,
+  withoutRecommendationDetail,
+} from "@/lib/mock/recommendation-detail-url";
+import { REPORT_START_FROM_TRIAGE_HREF } from "@/lib/mock/safe-actions";
 import {
   type TriageRecommendationResult,
   MockTriageRecommendationService,
@@ -320,8 +331,11 @@ function RecommendationRow({
 
 function ResourceCard({
   action,
+  onOpenDetails,
 }: {
   action: ConversationFlowSupportAction;
+  /** Present only for governed mock-bundle recommendations — opens the shared recommendation detail modal instead of navigating directly. */
+  onOpenDetails?: () => void;
 }) {
   const usesCall = action.actionKind === "call";
 
@@ -347,13 +361,24 @@ function ResourceCard({
           </div>
         </div>
         <div className="mt-5 flex flex-wrap items-center gap-3">
-          <ActionLink
-            href={action.href}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-xs font-extrabold text-[#0F172A] transition hover:bg-[#E2E8F0]"
-          >
-            {action.ctaLabel}
-            {usesCall ? <IconPhoneFilled size={14} /> : <IconExternalLink size={14} />}
-          </ActionLink>
+          {onOpenDetails ? (
+            <button
+              type="button"
+              onClick={onOpenDetails}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-xs font-extrabold text-[#0F172A] transition hover:bg-[#E2E8F0]"
+            >
+              View details
+              <IconArrowRight size={14} />
+            </button>
+          ) : (
+            <ActionLink
+              href={action.href}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-xs font-extrabold text-[#0F172A] transition hover:bg-[#E2E8F0]"
+            >
+              {action.ctaLabel}
+              {usesCall ? <IconPhoneFilled size={14} /> : <IconExternalLink size={14} />}
+            </ActionLink>
+          )}
           {action.phone ? (
             <span className="text-[11px] font-semibold text-[#DBEAFE]">
               {action.phone}
@@ -851,7 +876,13 @@ const RECOMMENDATION_PRIORITY_BADGE_CLASS: Record<
   emergency_only: "bg-[#FEE2E2] text-[#B91C1C]",
 };
 
-function TriageSupportOptionCard({ option }: { option: TriageSupportOption }) {
+function TriageSupportOptionCard({
+  option,
+  onOpenDetails,
+}: {
+  option: TriageSupportOption;
+  onOpenDetails?: () => void;
+}) {
   const badgeClass =
     RECOMMENDATION_PRIORITY_BADGE_CLASS[option.recommendationPriority];
 
@@ -884,10 +915,23 @@ function TriageSupportOptionCard({ option }: { option: TriageSupportOption }) {
         </p>
       ) : null}
       <div className="mt-4 flex flex-wrap items-center gap-3">
+        {onOpenDetails ? (
+          <button
+            type="button"
+            onClick={onOpenDetails}
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+          >
+            View details
+          </button>
+        ) : null}
         {option.phoneDial ? (
           <a
             href={`tel:${option.phoneDial}`}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+            className={
+              onOpenDetails
+                ? "inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[#D8E3F0] bg-white px-5 text-xs font-extrabold text-[#334155] transition hover:bg-[#F8FAFC]"
+                : "inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+            }
           >
             <IconPhoneFilled size={14} />
             Call {option.phoneDisplay ?? option.phoneDial}
@@ -936,6 +980,41 @@ function ReportSubmissionSupportPage() {
   const [activeMicroCardId, setActiveMicroCardId] = useState<string | null>(
     null
   );
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Phase 7.1 — the URL (recommendationType/recommendationId) is the single
+  // source of truth for which detail is open, so Back/Forward/refresh/direct
+  // links all resolve correctly for free. Match reasons are never put in the
+  // URL, so this is a purely opportunistic in-memory cache: populated when a
+  // card is clicked (the reasons are already in hand at that point), ignored
+  // the moment the URL no longer matches it (nested navigation, Back,
+  // Forward, or a direct/refreshed load never had reasons to begin with).
+  const [openedWithMatchReasons, setOpenedWithMatchReasons] = useState<{
+    entityId: string;
+    matchReasons: string[];
+  } | null>(null);
+  // How many detail->detail pushes deep the current detail is, so the
+  // in-modal "Back" affordance only appears when there is somewhere within
+  // this detail flow to go back to (not on a direct/refreshed top-level load).
+  const [detailStackDepth, setDetailStackDepth] = useState(0);
+  const detailQueryState = parseRecommendationDetailFromSearchParams(searchParams);
+  const detailSelection: RecommendationDetailSelection | null = detailQueryState
+    ? {
+        entityType: detailQueryState.entityType,
+        entityId: detailQueryState.entityId,
+        matchReasons:
+          openedWithMatchReasons?.entityId === detailQueryState.entityId
+            ? openedWithMatchReasons.matchReasons
+            : undefined,
+      }
+    : null;
+
+  useEffect(() => {
+    if (!detailQueryState) {
+      setDetailStackDepth(0);
+    }
+  }, [detailQueryState]);
+
   const {
     pendingConsentRequirement,
     isGrantingConsent,
@@ -1085,6 +1164,39 @@ function ReportSubmissionSupportPage() {
       "Grant AI consent to load live SafeSpeak triage support for this report."
     );
     setLoading(false);
+  };
+
+  const openRecommendationDetail = (
+    entityType: string,
+    entityId: string,
+    matchReasons?: string[]
+  ) => {
+    setOpenedWithMatchReasons(matchReasons ? { entityId, matchReasons } : null);
+    setDetailStackDepth(0);
+    router.push(withRecommendationDetail(searchParams, entityType, entityId), {
+      scroll: false,
+    });
+  };
+
+  const closeRecommendationDetail = () => {
+    setDetailStackDepth(0);
+    router.push(withoutRecommendationDetail(searchParams), { scroll: false });
+  };
+
+  const navigateRecommendationDetail = (
+    selection: RecommendationDetailSelection
+  ) => {
+    setOpenedWithMatchReasons(null);
+    setDetailStackDepth((depth) => depth + 1);
+    router.push(
+      withRecommendationDetail(searchParams, selection.entityType, selection.entityId),
+      { scroll: false }
+    );
+  };
+
+  const backRecommendationDetail = () => {
+    setDetailStackDepth((depth) => Math.max(0, depth - 1));
+    router.back();
   };
 
   const handleSavePrivately = () => {
@@ -1407,6 +1519,15 @@ function ReportSubmissionSupportPage() {
                       <ResourceCard
                         key={item.id}
                         action={resourceItemToSupportAction(item)}
+                        onOpenDetails={() =>
+                          openRecommendationDetail(
+                            group.id === "matched-suggested-guides"
+                              ? "microcard"
+                              : "rights_content",
+                            item.id,
+                            item.matchReasons
+                          )
+                        }
                       />
                     ))}
                   </div>
@@ -1425,7 +1546,17 @@ function ReportSubmissionSupportPage() {
                     data-testid="triage-mock-support-options"
                   >
                     {mockTriage.supportOptions.map((option) => (
-                      <TriageSupportOptionCard key={option.id} option={option} />
+                      <TriageSupportOptionCard
+                        key={option.id}
+                        option={option}
+                        onOpenDetails={() =>
+                          openRecommendationDetail(
+                            "support_organisation",
+                            option.id,
+                            option.matchReasons
+                          )
+                        }
+                      />
                     ))}
                   </div>
                 </section>
@@ -1439,7 +1570,17 @@ function ReportSubmissionSupportPage() {
                     data-testid="triage-advocates-section"
                   >
                     {mockTriage.advocates.map((advocate) => (
-                      <TriageAdvocateCardView key={advocate.id} advocate={advocate} />
+                      <TriageAdvocateCardView
+                        key={advocate.id}
+                        advocate={advocate}
+                        onOpenDetails={() =>
+                          openRecommendationDetail(
+                            "support_professional",
+                            advocate.id,
+                            advocate.reasons
+                          )
+                        }
+                      />
                     ))}
                   </div>
                 </section>
@@ -1456,6 +1597,13 @@ function ReportSubmissionSupportPage() {
                       <TriageReportingDestinationCardView
                         key={destination.id}
                         destination={destination}
+                        onOpenDetails={() =>
+                          openRecommendationDetail(
+                            "reporting_destination",
+                            destination.id,
+                            destination.reasons
+                          )
+                        }
                       />
                     ))}
                   </div>
@@ -1727,7 +1875,7 @@ function ReportSubmissionSupportPage() {
                     action={
                       <ActionLink
                         href={withConversationSessionId(
-                          "/dashboard?view=reportsubmissiondetails&fromTriage=1",
+                          REPORT_START_FROM_TRIAGE_HREF,
                           resolvedConversationSessionId
                         )}
                         className="inline-flex h-12 w-full items-center justify-center gap-3 rounded-full bg-[#0F5D9F] px-6 text-xs font-extrabold text-white shadow-[0_12px_22px_rgba(15,93,159,0.28)] transition hover:bg-[#004E92] sm:w-auto"
@@ -1924,6 +2072,13 @@ function ReportSubmissionSupportPage() {
           showNavigation={suggestedMicroCards.length > 1}
         />
       ) : null}
+
+      <RecommendationDetailModal
+        selection={shouldShowNoSessionTriage ? detailSelection : null}
+        onClose={closeRecommendationDetail}
+        onNavigate={navigateRecommendationDetail}
+        onBack={detailStackDepth > 0 ? backRecommendationDetail : undefined}
+      />
     </>
   );
 }

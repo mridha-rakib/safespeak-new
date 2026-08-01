@@ -6,6 +6,7 @@
 // demo Assistant Conversation flow.
 
 import type { AssistantTimeline } from "@/lib/assistant-conversation";
+import { REPORT_START_FROM_TRIAGE_HREF } from "@/lib/mock/safe-actions";
 import {
   EMERGENCY_NUMBER,
   SUPPORT_NUMBER_DIAL,
@@ -38,6 +39,8 @@ export type TriageResourceItem = {
   phoneDial?: string;
   phoneDisplay?: string;
   iconKey?: string;
+  /** Phase 7 — only populated for governed mock-bundle matches; plain-language reason strings, never a score/rule id. */
+  matchReasons?: string[];
 };
 
 export type TriageResourceGroup = {
@@ -64,6 +67,8 @@ export type TriageSupportOption = {
   jurisdiction?: string;
   availability?: string;
   reason?: string;
+  /** Phase 7 — only populated for governed mock-bundle matches; plain-language reason strings, never a score/rule id. */
+  matchReasons?: string[];
   emergencyOnly: boolean;
   order: number;
 };
@@ -120,7 +125,7 @@ export function buildDemoTriageOverview(
         description:
           "Continue into the report builder using the information you already shared. Nothing is submitted automatically.",
         ctaLabel: "Continue",
-        href: "/dashboard?view=reportsubmissiondetails&fromTriage=1",
+        href: REPORT_START_FROM_TRIAGE_HREF,
       },
       {
         id: "learn-more",

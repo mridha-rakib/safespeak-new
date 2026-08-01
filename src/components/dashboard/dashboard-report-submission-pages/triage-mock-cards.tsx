@@ -49,7 +49,13 @@ function TristateLine({ label, value }: { label: string; value: "yes" | "no" | "
   );
 }
 
-export function TriageAdvocateCardView({ advocate }: { advocate: TriageAdvocateCard }) {
+export function TriageAdvocateCardView({
+  advocate,
+  onOpenDetails,
+}: {
+  advocate: TriageAdvocateCard;
+  onOpenDetails?: () => void;
+}) {
   const badgeLabel = humanizeKey(advocate.verificationStatus);
   const badgeClass = verificationBadgeClass(advocate.verificationStatus);
 
@@ -89,10 +95,19 @@ export function TriageAdvocateCardView({ advocate }: { advocate: TriageAdvocateC
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
+        {onOpenDetails ? (
+          <button
+            type="button"
+            onClick={onOpenDetails}
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+          >
+            View details
+          </button>
+        ) : null}
         {advocate.phoneDial ? (
           <a
             href={`tel:${advocate.phoneDial}`}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[#D8E3F0] bg-white px-5 text-xs font-extrabold text-[#334155] transition hover:bg-[#F8FAFC]"
           >
             <IconPhoneFilled size={14} />
             Call {advocate.phoneDisplay ?? advocate.phoneDial}
@@ -127,8 +142,10 @@ export function TriageAdvocateCardView({ advocate }: { advocate: TriageAdvocateC
 
 export function TriageReportingDestinationCardView({
   destination,
+  onOpenDetails,
 }: {
   destination: TriageReportingDestinationCard;
+  onOpenDetails?: () => void;
 }) {
   const canShowOnlineReporting =
     Boolean(destination.onlineReportingUrl) && destination.onlineReportingUrl!.startsWith("https://");
@@ -163,10 +180,19 @@ export function TriageReportingDestinationCardView({
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
+        {onOpenDetails ? (
+          <button
+            type="button"
+            onClick={onOpenDetails}
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+          >
+            View details
+          </button>
+        ) : null}
         {destination.phoneDial ? (
           <a
             href={`tel:${destination.phoneDial}`}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#0F5D9F] px-5 text-xs font-extrabold text-white transition hover:bg-[#004E92]"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[#D8E3F0] bg-white px-5 text-xs font-extrabold text-[#334155] transition hover:bg-[#F8FAFC]"
           >
             <IconPhoneFilled size={14} />
             Call {destination.phoneDisplay ?? destination.phoneDial}

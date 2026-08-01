@@ -3,10 +3,13 @@ import test from "node:test";
 
 import {
   destinationToReportingCard,
+  formatContractJurisdiction,
+  formatContractJurisdictionList,
   humanizeKey,
   microcardToResourceItem,
   organisationToSupportOption,
   professionalToAdvocateCard,
+  resolveMicrocardCardHref,
   rightsContentDisclaimer,
   rightsContentToResourceItem,
   toDialablePhone,
@@ -41,7 +44,7 @@ test("toDialablePhone strips everything except digits and a leading plus", () =>
   assert.equal(toDialablePhone("+61 2 9999 0000"), "+61299990000");
 });
 
-test("microcardToResourceItem only sets href for open_safe_external_link / open_internal_route CTAs", () => {
+test("microcardToResourceItem only sets href for open_safe_external_link / open_internal_route CTAs, resolved through the same safety validators as the detail modal", () => {
   const base: PublishedMicrocard = {
     ...BASE,
     id: "mc-1",
@@ -65,7 +68,45 @@ test("microcardToResourceItem only sets href for open_safe_external_link / open_
     microcardToResourceItem({ ...base, cta: { type: "open_safe_external_link", target: "https://example.org" } }, REASONS).href,
     "https://example.org"
   );
-  assert.equal(microcardToResourceItem({ ...base, cta: { type: "open_internal_route", target: "/rights" } }, REASONS).href, "/rights");
+  // "/rights" is the canonical Microcard CTA vocabulary's internal-route
+  // key (safespeak-admin's MICROCARD_INTERNAL_ROUTES) — resolved through
+  // safeInternalRoute() to this app's real route, never passed through raw.
+  assert.equal(
+    microcardToResourceItem({ ...base, cta: { type: "open_internal_route", target: "/rights" } }, REASONS).href,
+    "/dashboard?view=resources"
+  );
+});
+
+test("microcardToResourceItem never sets href for an unsafe/unrecognised CTA target — no raw passthrough", () => {
+  const base: PublishedMicrocard = {
+    ...BASE,
+    id: "mc-1",
+    title: "Title",
+    summary: "Summary",
+    tags: [],
+    incidentTypeIds: [],
+    priority: "normal",
+    displayOrder: 0,
+    relatedLegislationIds: [],
+    relatedSupportOrganisationIds: [],
+    cta: { type: "none" },
+  };
+
+  assert.equal(
+    microcardToResourceItem({ ...base, cta: { type: "open_safe_external_link", target: "javascript:alert(1)" } }, REASONS)
+      .href,
+    undefined
+  );
+  assert.equal(
+    microcardToResourceItem({ ...base, cta: { type: "open_safe_external_link", target: "http://example.org" } }, REASONS)
+      .href,
+    undefined
+  );
+  assert.equal(
+    microcardToResourceItem({ ...base, cta: { type: "open_internal_route", target: "/not-a-real-route" } }, REASONS)
+      .href,
+    undefined
+  );
 });
 
 test("microcardToResourceItem humanises cardType into category, falling back to Guidance", () => {
@@ -223,6 +264,45 @@ test("destinationToReportingCard preserves the anonymousReporting/emergencySuita
   const yesNo = destinationToReportingCard({ ...record, anonymousReporting: "yes", emergencySuitability: "no" }, REASONS);
   assert.equal(yesNo.anonymousReporting, "yes");
   assert.equal(yesNo.emergencySuitability, "no");
+});
+
+test("formatContractJurisdiction turns the lowercase contract enum into a readable label, never a raw code", () => {
+  assert.equal(formatContractJurisdiction("commonwealth"), "Commonwealth");
+  assert.equal(formatContractJurisdiction("nsw"), "NSW");
+  assert.equal(formatContractJurisdiction("vic"), "VIC");
+  assert.equal(formatContractJurisdiction(undefined), undefined);
+  assert.equal(formatContractJurisdiction(""), undefined);
+});
+
+test("formatContractJurisdiction degrades to humanizeKey for a value outside the known enum, rather than rendering raw", () => {
+  assert.equal(formatContractJurisdiction("future_region"), "Future Region");
+});
+
+test("formatContractJurisdictionList formats and joins every value, or is undefined for an empty list", () => {
+  assert.equal(formatContractJurisdictionList(["nsw", "vic"]), "NSW, VIC");
+  assert.equal(formatContractJurisdictionList([]), undefined);
+  assert.equal(formatContractJurisdictionList(undefined), undefined);
+});
+
+test("resolveMicrocardCardHref uses the exact same safety validators as the detail modal — no divergent second mapper", () => {
+  assert.equal(resolveMicrocardCardHref({ type: "none" }), undefined);
+  assert.equal(resolveMicrocardCardHref({ type: "start_report" }), undefined);
+  assert.equal(
+    resolveMicrocardCardHref({ type: "view_rights_information", target: "rc-1" }),
+    undefined
+  );
+  assert.equal(
+    resolveMicrocardCardHref({ type: "open_safe_external_link", target: "https://example.org" }),
+    "https://example.org"
+  );
+  assert.equal(
+    resolveMicrocardCardHref({ type: "open_safe_external_link", target: "javascript:alert(1)" }),
+    undefined
+  );
+  assert.equal(
+    resolveMicrocardCardHref({ type: "open_internal_route", target: "/emergency" }),
+    "/dashboard?view=smartdialler"
+  );
 });
 
 test("destinationToReportingCard only sets onlineReportingUrl when the source has a non-empty value", () => {

@@ -37,6 +37,10 @@ import {
   type LocalIntelligenceResponse,
   type LocalIntelligenceTimeframe,
 } from "@/lib/local-intelligence-client";
+import {
+  MICROCARD_LIBRARY_MOCK_MODE,
+  getMockMicrocards,
+} from "@/lib/mock/microcard-library-adapter";
 import { listPublishedResources, type ResourceItem } from "@/lib/resources";
 import {
   buildSmartDialerScript,
@@ -130,35 +134,58 @@ function ResourcesPage() {
   const [resources, setResources] = useState<ContentResourceItem[]>([]);
   const [microCards, setMicroCards] = useState<MicroEducationItem[]>([]);
   const [directoryResources, setDirectoryResources] = useState<ResourceItem[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Each section loads independently — a real-backend failure in one
+  // (content resources, the support directory; neither has a mock-bundle
+  // equivalent in this phase) must never blank out or show a raw error for
+  // the others, and must never surface raw backend error text. The
+  // existing empty-state copy per section already communicates "not
+  // available yet" safely, so a failure here simply leaves that section's
+  // list empty rather than setting any page-level error banner.
+  useEffect(() => {
+    let isActive = true;
+
+    listPublishedContentResources()
+      .then((next) => {
+        if (isActive) setResources(next.slice(0, 6));
+      })
+      .catch(() => {
+        if (isActive) setResources([]);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let isActive = true;
 
-    void Promise.all([
-      listPublishedContentResources(),
-      listPublishedMicroEducation(),
-      listPublishedResources(),
-    ])
-      .then(([nextResources, nextMicroCards, nextDirectoryResources]) => {
-        if (!isActive) {
-          return;
-        }
-
-        setResources(nextResources.slice(0, 6));
-        setMicroCards(nextMicroCards.slice(0, 4));
-        setDirectoryResources(nextDirectoryResources.slice(0, 6));
+    (MICROCARD_LIBRARY_MOCK_MODE
+      ? Promise.resolve(getMockMicrocards())
+      : listPublishedMicroEducation()
+    )
+      .then((next) => {
+        if (isActive) setMicroCards(next.slice(0, 4));
       })
-      .catch((error) => {
-        if (!isActive) {
-          return;
-        }
+      .catch(() => {
+        if (isActive) setMicroCards([]);
+      });
 
-        setLoadError(
-          error instanceof Error
-            ? error.message
-            : "Learn and resource content could not be loaded."
-        );
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    listPublishedResources()
+      .then((next) => {
+        if (isActive) setDirectoryResources(next.slice(0, 6));
+      })
+      .catch(() => {
+        if (isActive) setDirectoryResources([]);
       });
 
     return () => {
@@ -189,12 +216,6 @@ function ResourcesPage() {
             </Link>
           </div>
         </section>
-
-        {loadError ? (
-          <div className="rounded-[16px] border border-[#fde2e2] bg-[#fff5f5] px-4 py-3 text-[11px] text-[#b45353]">
-            {loadError}
-          </div>
-        ) : null}
 
         <section className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
           <article className="rounded-[22px] border border-[#dce5f1] bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">

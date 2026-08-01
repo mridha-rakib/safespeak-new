@@ -45,6 +45,10 @@ import {
   type MicroEducationFormat,
   type MicroEducationTone,
 } from "@/lib/microeducation";
+import {
+  MICROCARD_LIBRARY_MOCK_MODE,
+  getMockMicrocards,
+} from "@/lib/mock/microcard-library-adapter";
 import { cn } from "@/lib/utils";
 
 import { interFont } from "./dashboard-shared";
@@ -215,7 +219,9 @@ function MicroEducationPage() {
 
     const loadMicroEducation = async () => {
       try {
-        const items = await listPublishedMicroEducation();
+        const items = MICROCARD_LIBRARY_MOCK_MODE
+          ? getMockMicrocards()
+          : await listPublishedMicroEducation();
 
         if (!isMounted) {
           return;

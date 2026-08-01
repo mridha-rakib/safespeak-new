@@ -11,26 +11,16 @@ import {
   ArrowRight,
   BookOpen,
   Check,
-  ChevronRight,
-  ClipboardList,
-  Cloud,
   Copy,
   Download,
   FileText,
   HeartHandshake,
-  HelpCircle,
-  Languages,
   LifeBuoy,
-  Lock,
-  MessageSquareWarning,
-  Mic,
+  Loader2,
   Phone,
   RefreshCw,
   Save,
   Scale,
-  Search,
-  Settings,
-  ShieldCheck,
   Sparkles,
   Upload,
   UserRoundCheck,
@@ -44,6 +34,14 @@ import type { AssistantIncidentCategory } from "@/lib/assistant-categories";
 import { getAssistantTriageSource } from "@/lib/assistant-triage";
 import type { DashboardCardFlowId } from "@/lib/dashboard-card-flows";
 import {
+  MANUAL_EVIDENCE_ACCEPTED_FORMATS_LABEL,
+  MANUAL_EVIDENCE_ACCEPT_ATTRIBUTE,
+  MANUAL_EVIDENCE_LIMITS,
+  classifyEvidenceFile,
+  processEvidenceFileForDemo,
+  validateEvidenceFile,
+} from "@/lib/demo-evidence-processing";
+import {
   type MicroEducationItem,
   listPublishedMicroEducation,
 } from "@/lib/microeducation";
@@ -53,6 +51,10 @@ import {
   buildReportBuilderOverview,
 } from "@/lib/report-builder-view-model";
 import {
+  REPORT_COMMUNITY_OPTIONS,
+  REPORT_COMMUNITY_SKIP_OPTION,
+} from "@/lib/report-community";
+import {
   type InjuredValue,
   type ReportDraft,
   type SafetyStatusValue,
@@ -61,14 +63,45 @@ import {
   toTitleCase,
 } from "@/lib/report-draft-text";
 import {
+  type ManualEvidenceItem,
+  addManualEvidenceItem,
+  computeEvidenceFingerprint,
+  getManualEvidenceItems,
+  hasManualEvidenceFingerprint,
+  removeManualEvidenceItem,
+  updateManualEvidenceItem,
+} from "@/lib/report-evidence";
+import {
+  registerLiveEvidenceFile,
+  revokeAllLiveEvidenceFiles,
+  revokeLiveEvidenceFile,
+} from "@/lib/report-evidence-runtime";
+import { formatFileSize } from "@/lib/report-format";
+import {
+  type ReportLanguageCode,
+  LANGUAGE_TRANSLATION_DISCLAIMER,
+  REPORT_LANGUAGE_OPTIONS,
+  formatReportLanguageLabel,
+} from "@/lib/report-language";
+import {
+  LEGACY_MANUAL_DETAILS_STEP_MAP,
+  MANUAL_REVIEW_ONBOARDING_STEPS,
   REPORT_REVIEW_ONBOARDING_STEPS,
+  type ManualReviewOnboardingStepId,
+  type ReportReviewOnboardingStepId,
   isReportReviewOnboardingStep,
+  normalizeManualOnboardingStep,
   reportReviewOnboardingStepHref,
 } from "@/lib/report-review-onboarding";
 import { COVERT_MODE_KEY, NEUTRAL_ROUTE } from "@/lib/safety";
 import type { TriageSupportOption } from "@/lib/triage-view-model";
 import { cn } from "@/lib/utils";
 
+import {
+  EvidenceAttachmentCard,
+  ManualReportFlowProgress,
+  ManualReportReviewRouter,
+} from "./manual-report-review-pages";
 import {
   ReportReviewOnboardingProgress,
   ReportReviewOnboardingRouter,
@@ -77,40 +110,29 @@ import {
 const FLOW_STORAGE_KEY = "safespeak_report_onboarding_flow";
 const REPORT_DRAFT_STORAGE_KEY = "safespeak_report_entry_draft";
 
+/**
+ * Phase 8 — the manual flow's pre-"Incident Report" steps. Know/Privacy/Hub
+ * (previously `information`/`privacy`/`services`) have been removed; a
+ * visit to one of those old query values is normalised to `report` (see
+ * `LEGACY_MANUAL_DETAILS_STEP_MAP`) rather than rendered or crashed on.
+ * `report`'s internal id is unchanged (many other surfaces already link to
+ * `step=report`) — only its visible label and content changed to "Incident
+ * Report".
+ */
 const steps = [
   { id: "language", label: "Language" },
   { id: "community", label: "Community" },
-  { id: "information", label: "Know" },
-  { id: "privacy", label: "Privacy" },
-  { id: "services", label: "Hub" },
-  { id: "report", label: "Report" },
+  { id: "report", label: "Incident Report" },
 ] as const;
 
 type ReportOnboardingStep = (typeof steps)[number]["id"];
-type LanguageCode =
-  | "en-AU"
-  | "ar-SA"
-  | "zh-CN"
-  | "yue-HK"
-  | "vi-VN"
-  | "pa-IN"
-  | "hi-IN"
-  | "el-GR";
-
-type PrivacyPreferences = {
-  storeLocally: boolean;
-  cloudSyncPreference: boolean;
-  anonymousResearchSharing: boolean;
-};
+type LanguageCode = ReportLanguageCode;
 
 type ReportOnboardingState = {
   language: LanguageCode | null;
   communityBackground: string[];
   faithBackground: string | null;
   lifeStage: string | null;
-  privacyPreferences: PrivacyPreferences;
-  privacyUpdatedAt: string | null;
-  onboardingCompleted: boolean;
   reportDraft: ReportDraft;
   autoFilledFields: string[];
   lastAppliedTriageUpdatedAt: string | null;
@@ -133,41 +155,13 @@ const defaultState: ReportOnboardingState = {
   communityBackground: [],
   faithBackground: null,
   lifeStage: null,
-  privacyPreferences: {
-    storeLocally: true,
-    cloudSyncPreference: false,
-    anonymousResearchSharing: false,
-  },
-  privacyUpdatedAt: null,
-  onboardingCompleted: false,
   reportDraft: defaultReportDraft,
   autoFilledFields: [],
   lastAppliedTriageUpdatedAt: null,
 };
 
-const languages: Array<{
-  code: LanguageCode;
-  region: string;
-  englishName: string;
-  nativeName: string;
-}> = [
-  { code: "en-AU", region: "AU", englishName: "English", nativeName: "English" },
-  { code: "ar-SA", region: "SA", englishName: "Arabic", nativeName: "العربية" },
-  { code: "zh-CN", region: "CN", englishName: "Mandarin Chinese", nativeName: "中文" },
-  { code: "yue-HK", region: "HK", englishName: "Cantonese", nativeName: "粵語" },
-  { code: "vi-VN", region: "VN", englishName: "Vietnamese", nativeName: "Tiếng Việt" },
-  { code: "pa-IN", region: "IN", englishName: "Punjabi", nativeName: "ਪੰਜਾਬੀ" },
-  { code: "hi-IN", region: "IN", englishName: "Hindi", nativeName: "हिन्दी" },
-  { code: "el-GR", region: "GR", englishName: "Greek", nativeName: "Ελληνικά" },
-];
-
-const communityOptions = [
-  "CALD (Culturally & Linguistically Diverse)",
-  "Aboriginal or Torres Strait Islander",
-  "Migrant or refugee",
-] as const;
-
-const communitySkipOption = "Skip / Prefer not to answer";
+const communityOptions = REPORT_COMMUNITY_OPTIONS;
+const communitySkipOption = REPORT_COMMUNITY_SKIP_OPTION;
 
 const faithOptions = [
   "Christian",
@@ -208,10 +202,6 @@ function safeParseState(raw: string | null): ReportOnboardingState {
       communityBackground: Array.isArray(parsed.communityBackground)
         ? parsed.communityBackground.filter((item): item is string => typeof item === "string")
         : [],
-      privacyPreferences: {
-        ...defaultState.privacyPreferences,
-        ...parsed.privacyPreferences,
-      },
       reportDraft: {
         ...defaultReportDraft,
         ...parsed.reportDraft,
@@ -227,11 +217,6 @@ function safeParseState(raw: string | null): ReportOnboardingState {
   }
 }
 
-function getLanguageLabel(code: LanguageCode | null): string {
-  const language = languages.find((item) => item.code === code);
-  return language ? `${language.englishName} (${language.nativeName})` : "No language selected";
-}
-
 function saveSessionDraft(draft: ReportDraft): void {
   if (typeof window === "undefined") return;
   window.sessionStorage.setItem(REPORT_DRAFT_STORAGE_KEY, JSON.stringify(draft));
@@ -240,6 +225,7 @@ function saveSessionDraft(draft: ReportDraft): void {
 function quickExit(): void {
   if (typeof window === "undefined") return;
 
+  revokeAllLiveEvidenceFiles();
   window.sessionStorage.removeItem(FLOW_STORAGE_KEY);
   window.sessionStorage.removeItem(REPORT_DRAFT_STORAGE_KEY);
   window.sessionStorage.setItem(COVERT_MODE_KEY, "1");
@@ -257,9 +243,14 @@ function ReportSubmissionDetailsPage({
   const searchParams = useSearchParams();
   const requestedStep = searchParams.get("step");
   const fromTriage = searchParams.get("fromTriage") === "1";
-  const onboardingStep = isReportReviewOnboardingStep(requestedStep)
-    ? requestedStep
-    : null;
+  const onboardingStep: ReportReviewOnboardingStepId | ManualReviewOnboardingStepId | null =
+    fromTriage
+      ? isReportReviewOnboardingStep(requestedStep)
+        ? requestedStep
+        : null
+      : requestedStep
+        ? normalizeManualOnboardingStep(requestedStep)
+        : null;
   const activeStep = isStep(requestedStep)
     ? requestedStep
     : fromTriage
@@ -272,6 +263,12 @@ function ReportSubmissionDetailsPage({
     useState<ReportBuilderOverview | null>(null);
   const [draftFeedback, setDraftFeedback] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [evidenceItems, setEvidenceItems] = useState<ManualEvidenceItem[]>([]);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [isProcessingEvidence, setIsProcessingEvidence] = useState(false);
+  const [reportValidationMessage, setReportValidationMessage] = useState<
+    string | null
+  >(null);
   const isSavingRef = useRef(false);
   const isNavigatingToReviewRef = useRef(false);
 
@@ -338,6 +335,10 @@ function ReportSubmissionDetailsPage({
       autoFilledFields,
       lastAppliedTriageUpdatedAt,
     });
+
+    const canonicalDraft = getResolvedReportFlowDraft();
+    setEvidenceItems(getManualEvidenceItems(canonicalDraft?.evidenceIds ?? []));
+
     setHydrated(true);
   }, [initialMessage]);
 
@@ -346,8 +347,30 @@ function ReportSubmissionDetailsPage({
     window.sessionStorage.setItem(FLOW_STORAGE_KEY, JSON.stringify(state));
   }, [hydrated, state]);
 
+  // Old Know/Privacy/Hub ("information"/"privacy"/"services") pre-report steps and
+  // Triage-only "next"/"preview" onboarding sub-stages (when reached without
+  // fromTriage=1) are removed from the manual flow. Normalise both to a safe,
+  // in-flow destination instead of rendering, crashing, or losing the draft.
+  useEffect(() => {
+    if (!requestedStep) return;
+
+    if (requestedStep in LEGACY_MANUAL_DETAILS_STEP_MAP) {
+      router.replace(stepHref("report", fromTriage));
+      return;
+    }
+
+    if (
+      !fromTriage &&
+      (requestedStep === "next" || requestedStep === "preview")
+    ) {
+      router.replace(reportReviewOnboardingStepHref("review", false));
+    }
+  }, [requestedStep, fromTriage, router]);
+
   useEffect(() => {
     if (onboardingStep) return;
+    if (requestedStep && requestedStep in LEGACY_MANUAL_DETAILS_STEP_MAP) return;
+    if (!fromTriage && (requestedStep === "next" || requestedStep === "preview")) return;
     if (!isStep(requestedStep)) {
       router.replace(stepHref(fromTriage ? "report" : "language", fromTriage));
     }
@@ -359,10 +382,24 @@ function ReportSubmissionDetailsPage({
     }
   }, [activeStep, onboardingStep]);
 
+  // Evidence can be removed from the Review stage (a separate component
+  // instance with its own local state — see ManualReviewStage) without this
+  // page ever remounting. Re-reading the canonical store each time the
+  // Incident Report step becomes active keeps this step's attachment list
+  // (and its duplicate-fingerprint check) from going stale — latest-edits-win.
+  useEffect(() => {
+    if (!hydrated || onboardingStep || activeStep !== "report") return;
+
+    const canonicalDraft = getResolvedReportFlowDraft();
+    setEvidenceItems(getManualEvidenceItems(canonicalDraft?.evidenceIds ?? []));
+  }, [activeStep, onboardingStep, hydrated]);
+
   useEffect(() => {
     if (!onboardingStep || !hydrated) return;
 
-    const config = REPORT_REVIEW_ONBOARDING_STEPS[onboardingStep];
+    const config = fromTriage
+      ? REPORT_REVIEW_ONBOARDING_STEPS[onboardingStep as ReportReviewOnboardingStepId]
+      : MANUAL_REVIEW_ONBOARDING_STEPS[onboardingStep as ManualReviewOnboardingStepId];
     if (config.allowDirectAccess) return;
 
     const resolvedDraft = getResolvedReportFlowDraft();
@@ -381,7 +418,7 @@ function ReportSubmissionDetailsPage({
 
   const currentStepIndex = steps.findIndex((step) => step.id === activeStep);
   const selectedLanguage = useMemo(
-    () => languages.find((language) => language.code === state.language),
+    () => REPORT_LANGUAGE_OPTIONS.find((language) => language.code === state.language),
     [state.language]
   );
 
@@ -407,7 +444,9 @@ function ReportSubmissionDetailsPage({
 
   function headerBack(): void {
     if (onboardingStep) {
-      const previous = REPORT_REVIEW_ONBOARDING_STEPS[onboardingStep].previous;
+      const previous = fromTriage
+        ? REPORT_REVIEW_ONBOARDING_STEPS[onboardingStep as ReportReviewOnboardingStepId].previous
+        : MANUAL_REVIEW_ONBOARDING_STEPS[onboardingStep as ManualReviewOnboardingStepId].previous;
       router.push(
         previous
           ? reportReviewOnboardingStepHref(previous, fromTriage)
@@ -430,35 +469,39 @@ function ReportSubmissionDetailsPage({
   function selectLanguage(code: LanguageCode): void {
     updateState({ language: code });
     setLanguageError(null);
+    mergeReportFlowDraft({
+      language: code,
+      languageLabel: formatReportLanguageLabel(code),
+    });
   }
 
   function toggleCommunity(option: string): void {
     const current = state.communityBackground;
+    let nextSelections: string[];
 
-    if (option === communitySkipOption) {
-      updateState({ communityBackground: [communitySkipOption] });
-      return;
+    if (option === REPORT_COMMUNITY_SKIP_OPTION) {
+      nextSelections = [REPORT_COMMUNITY_SKIP_OPTION];
+    } else {
+      const withoutSkip = current.filter(
+        (item) => item !== REPORT_COMMUNITY_SKIP_OPTION
+      );
+      const exists = withoutSkip.includes(option);
+
+      if (exists) {
+        nextSelections = withoutSkip.filter((item) => item !== option);
+      } else if (withoutSkip.length >= 3) {
+        return;
+      } else {
+        nextSelections = [...withoutSkip, option];
+      }
     }
 
-    const withoutSkip = current.filter((item) => item !== communitySkipOption);
-    const exists = withoutSkip.includes(option);
-
-    if (exists) {
-      updateState({ communityBackground: withoutSkip.filter((item) => item !== option) });
-      return;
-    }
-
-    if (withoutSkip.length >= 3) return;
-    updateState({ communityBackground: [...withoutSkip, option] });
-  }
-
-  function updatePrivacy(key: keyof PrivacyPreferences): void {
-    updateState({
-      privacyPreferences: {
-        ...state.privacyPreferences,
-        [key]: !state.privacyPreferences[key],
-      },
-      privacyUpdatedAt: new Date().toISOString(),
+    updateState({ communityBackground: nextSelections });
+    mergeReportFlowDraft({
+      community: nextSelections.join(", ") || undefined,
+      communityLabel: nextSelections.length
+        ? nextSelections.join(", ")
+        : "Not provided",
     });
   }
 
@@ -482,6 +525,10 @@ function ReportSubmissionDetailsPage({
       updateState({
         autoFilledFields: state.autoFilledFields.filter((field) => field !== key),
       });
+    }
+
+    if (reportValidationMessage) {
+      setReportValidationMessage(null);
     }
   }
 
@@ -550,8 +597,135 @@ function ReportSubmissionDetailsPage({
     }
   }
 
+  async function handleFilesSelected(files: FileList | File[]): Promise<void> {
+    const fileList = Array.isArray(files) ? files : Array.from(files);
+    if (!fileList.length) return;
+
+    setEvidenceError(null);
+
+    const accepted: ManualEvidenceItem[] = [];
+    const acceptedFiles = new Map<string, File>();
+    // Seeded from already-attached items so a file re-selected later (not just
+    // twice in one picker action) is caught too; extended as this batch is
+    // processed so duplicates *within* one selection are also caught.
+    const seenFingerprints = new Set(evidenceItems.map((item) => item.fingerprint));
+    let runningCount = evidenceItems.length;
+
+    for (const file of fileList) {
+      const validation = validateEvidenceFile(file, runningCount);
+
+      if (!validation.ok) {
+        setEvidenceError(validation.reason);
+        continue;
+      }
+
+      const classification = classifyEvidenceFile(file);
+      if (!classification) {
+        setEvidenceError(
+          `${file.name} isn't a supported file type in this demo.`
+        );
+        continue;
+      }
+
+      const fingerprint = computeEvidenceFingerprint(file, classification.extension);
+
+      // Checked against both the in-memory batch/state (fast) and the
+      // canonical store directly (source of truth) — the latter guards
+      // against `evidenceItems` state having gone stale relative to a
+      // removal made elsewhere (e.g. the Review stage).
+      if (seenFingerprints.has(fingerprint) || hasManualEvidenceFingerprint(fingerprint)) {
+        setEvidenceError(`${file.name} is already attached.`);
+        continue;
+      }
+      seenFingerprints.add(fingerprint);
+
+      const id = `${fingerprint}-${Math.random().toString(36).slice(2, 8)}`;
+      const item: ManualEvidenceItem = {
+        id,
+        fingerprint,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        extension: classification.extension,
+        sizeBytes: file.size,
+        category: classification.category,
+        status: "selected",
+        demoNote: "Preparing this attachment...",
+        addedAt: new Date().toISOString(),
+      };
+
+      addManualEvidenceItem(item);
+      registerLiveEvidenceFile(id, file);
+      accepted.push(item);
+      acceptedFiles.set(id, file);
+      runningCount += 1;
+    }
+
+    if (!accepted.length) return;
+
+    setEvidenceItems((current) => [...current, ...accepted]);
+    const canonicalDraft = getResolvedReportFlowDraft();
+    mergeReportFlowDraft({
+      evidenceIds: [
+        ...new Set([
+          ...(canonicalDraft?.evidenceIds ?? []),
+          ...accepted.map((item) => item.id),
+        ]),
+      ],
+    });
+    setReportValidationMessage(null);
+
+    setIsProcessingEvidence(true);
+    try {
+      await Promise.all(
+        accepted.map(async (item) => {
+          const file = acceptedFiles.get(item.id);
+          if (!file) return;
+
+          const demoResult = await processEvidenceFileForDemo(file, item.category);
+          const patch = {
+            status: demoResult.status,
+            demoNote: demoResult.demoNote,
+            extractedText: demoResult.extractedText,
+          };
+
+          updateManualEvidenceItem(item.id, patch);
+          setEvidenceItems((current) =>
+            current.map((existing) =>
+              existing.id === item.id ? { ...existing, ...patch } : existing
+            )
+          );
+        })
+      );
+    } finally {
+      setIsProcessingEvidence(false);
+    }
+  }
+
+  function handleRemoveEvidence(id: string): void {
+    removeManualEvidenceItem(id);
+    revokeLiveEvidenceFile(id);
+    setEvidenceItems((current) => current.filter((item) => item.id !== id));
+    const canonicalDraft = getResolvedReportFlowDraft();
+    mergeReportFlowDraft({
+      evidenceIds: (canonicalDraft?.evidenceIds ?? []).filter(
+        (evidenceId) => evidenceId !== id
+      ),
+    });
+  }
+
   function handleReviewIncident(): void {
     if (isNavigatingToReviewRef.current) return;
+
+    const hasNarrative = state.reportDraft.summary.trim().length > 0;
+    const hasEvidence = evidenceItems.length > 0;
+
+    if (!hasNarrative && !hasEvidence) {
+      setReportValidationMessage(
+        "Add a short description of what happened, or attach a supported file, before continuing."
+      );
+      return;
+    }
+
     isNavigatingToReviewRef.current = true;
 
     saveSessionDraft(state.reportDraft);
@@ -564,6 +738,7 @@ function ReportSubmissionDetailsPage({
       summary: draft.summary,
       safetyStatus: draft.safetyStatus || undefined,
       incidentType: reportOverview?.matchedPathway.category,
+      entrySource: fromTriage ? "triage" : "manual",
       structuredFields: {
         who: draft.relationshipToPerson || undefined,
         what: draft.summary || undefined,
@@ -584,6 +759,23 @@ function ReportSubmissionDetailsPage({
       </div>
     );
   }
+
+  // Only meaningful for the manual (non-Triage) onboarding steps
+  // (review/destination/consent/complete) — the Triage path renders
+  // ReportReviewOnboardingProgress instead and never reads these, but
+  // `onboardingStep` can still be a Triage-only id like "next"/"preview"
+  // here (not a key of MANUAL_REVIEW_ONBOARDING_STEPS), so this must not
+  // index into that map unless we're actually on the manual path.
+  const manualOnboardingStep =
+    onboardingStep && !fromTriage
+      ? (onboardingStep as ManualReviewOnboardingStepId)
+      : null;
+  const manualStageIndex = manualOnboardingStep
+    ? 3 + MANUAL_REVIEW_ONBOARDING_STEPS[manualOnboardingStep].order
+    : currentStepIndex;
+  const manualStageLabel = manualOnboardingStep
+    ? MANUAL_REVIEW_ONBOARDING_STEPS[manualOnboardingStep].label
+    : steps[currentStepIndex]?.label ?? "Language";
 
   return (
     <div className="px-2 pb-28 pt-2 text-[#1f2a3a] sm:px-4 sm:pb-36 sm:pt-4">
@@ -612,21 +804,35 @@ function ReportSubmissionDetailsPage({
           aria-labelledby="report-flow-heading"
           className="rounded-[16px] border border-[#dce4ef] bg-white p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)] sm:p-5 lg:p-6"
         >
-          {onboardingStep ? (
-            <ReportReviewOnboardingProgress currentStepId={onboardingStep} />
+          {onboardingStep && fromTriage ? (
+            <ReportReviewOnboardingProgress
+              currentStepId={onboardingStep as ReportReviewOnboardingStepId}
+            />
           ) : (
-            <ProgressIndicator currentStepIndex={currentStepIndex} />
+            <ManualReportFlowProgress
+              currentIndex={manualStageIndex}
+              currentLabel={manualStageLabel}
+            />
           )}
 
           <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-200">
-            {onboardingStep ? (
+            {onboardingStep && fromTriage ? (
               <ReportReviewOnboardingRouter
-                step={onboardingStep}
+                step={onboardingStep as ReportReviewOnboardingStepId}
                 overview={reportOverview}
                 onGoToStep={(step) =>
                   router.push(reportReviewOnboardingStepHref(step, fromTriage))
                 }
                 onEditDetails={() => router.push(stepHref("report", fromTriage))}
+              />
+            ) : onboardingStep ? (
+              <ManualReportReviewRouter
+                step={onboardingStep as ManualReviewOnboardingStepId}
+                overview={reportOverview}
+                onGoToStep={(step) =>
+                  router.push(reportReviewOnboardingStepHref(step, false))
+                }
+                onGoToDetailsStep={(step) => router.push(stepHref(step, false))}
               />
             ) : activeStep === "language" ? (
               <LanguageStep
@@ -647,25 +853,6 @@ function ReportSubmissionDetailsPage({
                 onLifeStageChange={(lifeStage) => updateState({ lifeStage })}
                 onToggleCommunity={toggleCommunity}
               />
-            ) : activeStep === "information" ? (
-              <InformationStep onBack={goBack} onContinue={goNext} />
-            ) : activeStep === "privacy" ? (
-              <PrivacyStep
-                onBack={goBack}
-                onChangeLater={() => goToStep("services")}
-                onContinue={() => {
-                  updateState({ onboardingCompleted: true });
-                  goToStep("services");
-                }}
-                onToggle={updatePrivacy}
-                preferences={state.privacyPreferences}
-                updatedAt={state.privacyUpdatedAt}
-              />
-            ) : activeStep === "services" ? (
-              <ServiceHubStep
-                languageSummary={getLanguageLabel(state.language)}
-                onStartReport={() => goToStep("report")}
-              />
             ) : (
               <ReportEntryStep
                 draft={state.reportDraft}
@@ -674,10 +861,14 @@ function ReportSubmissionDetailsPage({
                 fromTriage={fromTriage}
                 draftFeedback={draftFeedback}
                 copyFeedback={copyFeedback}
+                evidenceItems={evidenceItems}
+                evidenceError={evidenceError}
+                isProcessingEvidence={isProcessingEvidence}
+                validationMessage={reportValidationMessage}
                 onBack={
                   fromTriage
                     ? () => router.push("/dashboard?view=reportsubmissionsupport" as Route)
-                    : () => goToStep("services")
+                    : () => goToStep("community")
                 }
                 onDraftFieldChange={updateDraftField}
                 onDiscardPrefill={handleDiscardPrefill}
@@ -686,53 +877,15 @@ function ReportSubmissionDetailsPage({
                 onCopyToClipboard={() => {
                   void handleCopyToClipboard();
                 }}
+                onFilesSelected={(files) => {
+                  void handleFilesSelected(files);
+                }}
+                onRemoveEvidence={handleRemoveEvidence}
                 onReviewIncident={handleReviewIncident}
               />
             )}
           </div>
         </section>
-      </div>
-    </div>
-  );
-}
-
-function ProgressIndicator({ currentStepIndex }: { currentStepIndex: number }) {
-  const progress = ((currentStepIndex + 1) / steps.length) * 100;
-
-  return (
-    <div className="mb-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase text-[#0f5d9f]">
-            Step {currentStepIndex + 1} of {steps.length}
-          </p>
-          <p className="mt-1 text-xs text-[#60718a]">
-            {steps[currentStepIndex]?.label} in the SafeSpeak report flow
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-1.5" aria-label="Report flow progress">
-          {steps.map((step, index) => (
-            <span
-              key={step.id}
-              className={cn(
-                "rounded-full px-2.5 py-1 text-xs font-semibold",
-                index === currentStepIndex
-                  ? "bg-[#0f5d9f] text-white"
-                  : index < currentStepIndex
-                    ? "bg-[#e7f1fb] text-[#0f5d9f]"
-                    : "bg-[#f1f5f9] text-[#64748b]"
-              )}
-            >
-              {step.label}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e5edf6]">
-        <div
-          className="h-full rounded-full bg-[#0f5d9f] transition-all duration-200"
-          style={{ width: `${progress}%` }}
-        />
       </div>
     </div>
   );
@@ -808,18 +961,22 @@ function LanguageStep({
   error: string | null;
   onContinue: () => void;
   onSelect: (code: LanguageCode) => void;
-  selectedLanguage?: (typeof languages)[number];
+  selectedLanguage?: (typeof REPORT_LANGUAGE_OPTIONS)[number];
   selectedLanguageCode: LanguageCode | null;
 }) {
   return (
     <div>
       <StepHeader
-        title="Select Your Language"
-        description="Choose how you’d like to use SafeSpeak"
+        title="Select your language"
+        description="Choose the language you'd like to use for the SafeSpeak report experience."
       />
 
+      <div className="mt-4 rounded-[14px] border border-[#dce5f1] bg-[#f8fbff] p-4 text-xs leading-5 text-[#60718a]">
+        {LANGUAGE_TRANSLATION_DISCLAIMER}
+      </div>
+
       <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="radiogroup" aria-label="SafeSpeak language">
-        {languages.map((language) => {
+        {REPORT_LANGUAGE_OPTIONS.map((language) => {
           const selected = language.code === selectedLanguageCode;
           return (
             <button
@@ -1037,438 +1194,6 @@ function ChoicePanel<TOption extends string>({
   );
 }
 
-function InformationStep({
-  onBack,
-  onContinue,
-}: {
-  onBack: () => void;
-  onContinue: () => void;
-}) {
-  return (
-    <div>
-      <StepHeader
-        title="A few things to know"
-        description="So you know what to expect — and what’s in your control."
-      />
-
-      <div className="mt-6 grid gap-4 lg:grid-cols-3">
-        <InfoCard
-          icon={<ShieldCheck size={20} aria-hidden="true" />}
-          title="What SafeSpeak is"
-          items={[
-            "A trauma-informed guide",
-            "A way to understand what happened",
-            "A path to find an appropriate service",
-            "A place to prepare a report if you choose",
-          ]}
-        />
-        <InfoCard
-          icon={<HelpCircle size={20} aria-hidden="true" />}
-          title="What SafeSpeak is not"
-          items={[
-            "Not a crisis service",
-            "Not a legal advisor",
-            "Not a counsellor",
-            "Not an investigation or case-management organisation",
-          ]}
-        />
-        <InfoCard
-          icon={<X size={20} aria-hidden="true" />}
-          title="Quick Exit"
-          items={[
-            "Leaves SafeSpeak quickly if needed",
-            "Clears in-progress report state for this flow",
-            "Moves to a neutral screen",
-            "Browser history may still record this page",
-          ]}
-        />
-      </div>
-
-      <div className="mt-4 rounded-[14px] border border-[#dce5f1] bg-[#f8fbff] p-4">
-        <div className="flex items-start gap-3">
-          <Lock className="mt-0.5 size-5 shrink-0 text-[#0f5d9f]" aria-hidden="true" />
-          <div>
-            <h2 className="font-bold text-[#1f2a3a]">Covert mode</h2>
-            <p className="mt-1 text-sm leading-6 text-[#60718a]">
-              SafeSpeak includes covert-mode presentation elsewhere in the app. In this flow, Quick Exit can move you to the neutral page and set the covert preference, but it cannot hide a screen from someone already watching it.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <p className="mt-4 text-sm leading-6 text-[#60718a]">
-        SafeSpeak does not investigate incidents or hold cases. Nothing is sent unless a real submission pathway is later connected and you decide to use it.
-      </p>
-
-      <FlowActions onBack={onBack} onContinue={onContinue} continueLabel="I Understand / Continue" />
-    </div>
-  );
-}
-
-function InfoCard({
-  icon,
-  title,
-  items,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  items: string[];
-}) {
-  return (
-    <Card className="rounded-[14px] p-4">
-      <div className="flex items-center gap-2 text-[#0f5d9f]">
-        {icon}
-        <h2 className="font-bold text-[#1f2a3a]">{title}</h2>
-      </div>
-      <ul className="mt-4 space-y-2">
-        {items.map((item) => (
-          <li key={item} className="flex gap-2 text-sm leading-6 text-[#60718a]">
-            <Check className="mt-1 size-4 shrink-0 text-[#0f5d9f]" aria-hidden="true" />
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-    </Card>
-  );
-}
-
-function PrivacyStep({
-  onBack,
-  onChangeLater,
-  onContinue,
-  onToggle,
-  preferences,
-  updatedAt,
-}: {
-  onBack: () => void;
-  onChangeLater: () => void;
-  onContinue: () => void;
-  onToggle: (key: keyof PrivacyPreferences) => void;
-  preferences: PrivacyPreferences;
-  updatedAt: string | null;
-}) {
-  return (
-    <div>
-      <StepHeader
-        title="Your Privacy & Control"
-        description="Choose how your data is handled"
-      />
-
-      <div className="mt-6 grid gap-3">
-        <PrivacyToggle
-          checked={preferences.storeLocally}
-          description="Keep a private copy on your phone or computer. It can be deleted later."
-          icon={<Save size={18} aria-hidden="true" />}
-          id="store-locally"
-          label="Store my report locally on this device"
-          onChange={() => onToggle("storeLocally")}
-        />
-        <PrivacyToggle
-          checked={preferences.cloudSyncPreference}
-          description="Backs up the report so it can be accessed from another device."
-          icon={<Cloud size={18} aria-hidden="true" />}
-          id="cloud-sync"
-          label="Sync my report to SafeSpeak cloud"
-          onChange={() => onToggle("cloudSyncPreference")}
-        />
-        <PrivacyToggle
-          checked={preferences.anonymousResearchSharing}
-          description="Helps SafeSpeak understand trends without intentionally sharing personal details."
-          icon={<Search size={18} aria-hidden="true" />}
-          id="research-sharing"
-          label="Share anonymised data for research & insights"
-          onChange={() => onToggle("anonymousResearchSharing")}
-        />
-      </div>
-
-      <div className="mt-4 rounded-[14px] border border-[#dce5f1] bg-[#f8fbff] p-4 text-sm leading-6 text-[#60718a]">
-        <p>
-          Preferences last updated:{" "}
-          <span className="font-semibold text-[#1f2a3a]">{formatTimestamp(updatedAt)}</span>
-        </p>
-        <p className="mt-1">
-          These are local preferences only. Cloud sync is saved as a preference and no upload is performed here.
-        </p>
-      </div>
-
-      <div className="mt-8 flex flex-col-reverse gap-3 border-t border-[#e3ebf5] pt-5 sm:flex-row sm:items-center sm:justify-between">
-        <Button variant="outline" onClick={onBack} className="min-h-11 rounded-full">
-          <ArrowLeft className="mr-2 size-4" aria-hidden="true" />
-          Back
-        </Button>
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <Button variant="ghost" onClick={onChangeLater} className="min-h-11 rounded-full">
-            Change Settings Later
-          </Button>
-          <Button onClick={onContinue} className="min-h-11 rounded-full bg-[#0f5d9f] hover:bg-[#0b528d]">
-            I Understand & Continue
-            <ArrowRight className="ml-2 size-4" aria-hidden="true" />
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PrivacyToggle({
-  checked,
-  description,
-  icon,
-  id,
-  label,
-  onChange,
-}: {
-  checked: boolean;
-  description: string;
-  icon: React.ReactNode;
-  id: string;
-  label: string;
-  onChange: () => void;
-}) {
-  return (
-    <label
-      htmlFor={id}
-      className="flex cursor-pointer flex-col gap-4 rounded-[14px] border border-[#dbe5f0] bg-white p-4 transition hover:bg-[#f8fbff] sm:flex-row sm:items-center sm:justify-between"
-    >
-      <span className="flex min-w-0 items-start gap-3">
-        <span className="mt-0.5 text-[#0f5d9f]">{icon}</span>
-        <span>
-          <span className="block font-bold text-[#1f2a3a]">{label}</span>
-          <span className="mt-1 block text-sm leading-6 text-[#60718a]">{description}</span>
-        </span>
-      </span>
-      <span className="relative inline-flex h-8 w-14 shrink-0 items-center">
-        <input
-          id={id}
-          type="checkbox"
-          checked={checked}
-          onChange={onChange}
-          className="peer sr-only"
-        />
-        <span className="absolute inset-0 rounded-full bg-[#dbe5f0] transition peer-checked:bg-[#0f5d9f]" />
-        <span className="absolute left-1 size-6 rounded-full bg-white shadow transition peer-checked:translate-x-6" />
-      </span>
-    </label>
-  );
-}
-
-function ServiceHubStep({
-  languageSummary,
-  onStartReport,
-}: {
-  languageSummary: string;
-  onStartReport: () => void;
-}) {
-  const services = [
-    {
-      title: "Start a Report",
-      description: "Capture what happened using text, voice, or supporting documents.",
-      icon: <FileText size={22} aria-hidden="true" />,
-      primary: true,
-      action: onStartReport,
-      status: "Available",
-    },
-    {
-      title: "Check a Scam",
-      description: "Paste an email, SMS, or message and review common scam indicators.",
-      icon: <MessageSquareWarning size={22} aria-hidden="true" />,
-      href: "/dashboard?view=scamshieldintake" as Route,
-      status: "Existing tool",
-    },
-    {
-      title: "Get Support",
-      description: "Find trusted support services and local guidance.",
-      icon: <HeartHandshake size={22} aria-hidden="true" />,
-      href: "/dashboard?view=resources" as Route,
-      status: "Existing section",
-    },
-    {
-      title: "Understand My Rights",
-      description: "Open plain-language information and learning cards.",
-      icon: <BookOpen size={22} aria-hidden="true" />,
-      href: "/dashboard?view=microcards" as Route,
-      status: "Existing section",
-    },
-    {
-      title: "Call For Help",
-      description: "Open SafeSpeak’s existing urgent-help entry point.",
-      icon: <Phone size={22} aria-hidden="true" />,
-      href: "/dashboard?view=smartdialler" as Route,
-      status: "Existing section",
-    },
-    {
-      title: "Learn / Microcards",
-      description: "Short educational lessons that can be read or listened to.",
-      icon: <Languages size={22} aria-hidden="true" />,
-      href: "/dashboard?view=microeducation" as Route,
-      status: "Existing section",
-    },
-  ];
-
-  return (
-    <div>
-      <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr] lg:items-stretch">
-        <div className="rounded-[16px] border border-[#dce5f1] bg-[#f8fbff] p-5 sm:p-6">
-          <Badge className="border-[#b9d7f1] bg-white text-[#0f5d9f]">SafeSpeak service hub</Badge>
-          <h1 id="report-flow-heading" className="mt-5 text-3xl font-extrabold text-[#1f2a3a] sm:text-4xl">
-            You’re in control.
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#60718a] sm:text-base">
-            SafeSpeak is available whenever you need it. Nothing is submitted until you decide what to do next.
-          </p>
-          <div className="mt-5 flex flex-wrap gap-2">
-            {["Private", "Anonymous where available", "Trauma informed", "Relevant local services"].map((item) => (
-              <Badge key={item} className="bg-white text-[#334155]">
-                <ShieldCheck className="mr-1.5 size-3.5 text-[#0f5d9f]" aria-hidden="true" />
-                {item}
-              </Badge>
-            ))}
-          </div>
-          <p className="mt-5 text-xs font-semibold text-[#60718a]">
-            Current language preference: {languageSummary}
-          </p>
-        </div>
-
-        <Card className="rounded-[16px] p-5">
-          <h2 className="font-bold text-[#1f2a3a]">Recent activity</h2>
-          <p className="mt-2 text-sm leading-6 text-[#60718a]">
-            Started reports, saved support services, and opened lessons will appear here. No activity is fetched from a server in this flow.
-          </p>
-          <div className="mt-5 rounded-[14px] border border-dashed border-[#cbd8e6] bg-[#f8fbff] p-4 text-sm text-[#60718a]">
-            No recent activity yet.
-          </div>
-        </Card>
-      </div>
-
-      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {services.map((service) => (
-          <ServiceCard key={service.title} service={service} />
-        ))}
-      </div>
-
-      <div className="mt-5 grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
-        <Card className="rounded-[14px] p-4">
-          <h2 className="font-bold text-[#1f2a3a]">Safety and awareness</h2>
-          <div className="mt-4 grid gap-3">
-            <AwarenessRow title="Latest scam patterns" description="Open Scam Shield to check suspicious messages." href="/dashboard?view=scamshieldintake" />
-            <AwarenessRow title="Urgent help entry point" description="Use the existing Smart Dialler section for help options." href="/dashboard?view=smartdialler" />
-            <AwarenessRow title="Safety guidance" description="Read practical microcards and safety resources." href="/dashboard?view=microcards" />
-          </div>
-        </Card>
-
-        <Card className="rounded-[14px] p-4">
-          <h2 className="font-bold text-[#1f2a3a]">My toolkit</h2>
-          <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            <ToolkitLink label="Reports" href="/dashboard?view=reportshistory" icon={<ClipboardList size={16} aria-hidden="true" />} />
-            <ToolkitLink label="Lessons" href="/dashboard?view=microeducation" icon={<BookOpen size={16} aria-hidden="true" />} />
-            <ToolkitLink label="Settings" href="/dashboard/settings" icon={<Settings size={16} aria-hidden="true" />} />
-            <ToolkitLink label="Action plan" href="/dashboard?view=safetyplan" icon={<ShieldCheck size={16} aria-hidden="true" />} />
-            <ToolkitDisabled label="Saved items" />
-            <ToolkitDisabled label="Templates" />
-          </div>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function ServiceCard({
-  service,
-}: {
-  service: {
-    title: string;
-    description: string;
-    icon: React.ReactNode;
-    primary?: boolean;
-    action?: () => void;
-    href?: Route;
-    status: string;
-  };
-}) {
-  const className = cn(
-    "group flex min-h-48 flex-col justify-between rounded-[14px] border p-4 text-left transition hover:-translate-y-0.5 hover:bg-[#f8fbff]",
-    service.primary
-      ? "border-[#0f5d9f] bg-[#f2f8fd] shadow-[0_12px_28px_rgba(15,93,159,0.10)]"
-      : "border-[#dbe5f0] bg-white"
-  );
-  const content = (
-    <>
-      <span>
-        <span className="inline-flex size-11 items-center justify-center rounded-full bg-white text-[#0f5d9f] ring-1 ring-[#dbe5f0]">
-          {service.icon}
-        </span>
-        <span className="mt-4 block text-lg font-bold text-[#1f2a3a]">{service.title}</span>
-        <span className="mt-2 block text-sm leading-6 text-[#60718a]">{service.description}</span>
-      </span>
-      <span className="mt-5 flex items-center justify-between gap-3 text-xs font-bold text-[#0f5d9f]">
-        {service.status}
-        <ChevronRight className="size-4 transition group-hover:translate-x-0.5" aria-hidden="true" />
-      </span>
-    </>
-  );
-
-  if (service.href) {
-    return (
-      <Link href={service.href} className={className}>
-        {content}
-      </Link>
-    );
-  }
-
-  return (
-    <button type="button" onClick={service.action} className={className}>
-      {content}
-    </button>
-  );
-}
-
-function AwarenessRow({
-  title,
-  description,
-  href,
-}: {
-  title: string;
-  description: string;
-  href: Route;
-}) {
-  return (
-    <Link href={href} className="flex items-center justify-between gap-3 rounded-[12px] border border-[#dbe5f0] bg-white p-3 transition hover:bg-[#f8fbff]">
-      <span>
-        <span className="block text-sm font-bold text-[#1f2a3a]">{title}</span>
-        <span className="mt-1 block text-xs leading-5 text-[#60718a]">{description}</span>
-      </span>
-      <ChevronRight className="size-4 shrink-0 text-[#0f5d9f]" aria-hidden="true" />
-    </Link>
-  );
-}
-
-function ToolkitLink({
-  href,
-  icon,
-  label,
-}: {
-  href: Route;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <Link href={href} className="flex min-h-11 items-center gap-2 rounded-full border border-[#dbe5f0] bg-white px-4 text-sm font-semibold text-[#334155] transition hover:bg-[#f8fbff]">
-      <span className="text-[#0f5d9f]">{icon}</span>
-      {label}
-    </Link>
-  );
-}
-
-function ToolkitDisabled({ label }: { label: string }) {
-  return (
-    <span className="flex min-h-11 items-center justify-between gap-2 rounded-full border border-[#e3e8ef] bg-[#f8fafc] px-4 text-sm font-semibold text-[#94a3b8]" aria-disabled="true">
-      {label}
-      <span className="text-xs">Coming later</span>
-    </span>
-  );
-}
-
-
 function AutoFilledBadge() {
   return (
     <Badge className="ml-2 border-[#bfdcf5] bg-[#eef6ff] text-[10px] font-bold text-[#0f5d9f]">
@@ -1598,6 +1323,15 @@ function ReportMicrocards({ category }: { category: string }) {
   );
 }
 
+const INCIDENT_PROMPT_CHIPS = [
+  "What happened?",
+  "When did it happen?",
+  "Where did it happen?",
+  "Who was involved?",
+  "How did it affect you?",
+  "Anything else a reviewer should know?",
+];
+
 function ReportEntryStep({
   draft,
   autoFilledFields,
@@ -1605,12 +1339,18 @@ function ReportEntryStep({
   fromTriage,
   draftFeedback,
   copyFeedback,
+  evidenceItems,
+  evidenceError,
+  isProcessingEvidence,
+  validationMessage,
   onBack,
   onDraftFieldChange,
   onDiscardPrefill,
   onSaveLocalDraft,
   onDownloadTxt,
   onCopyToClipboard,
+  onFilesSelected,
+  onRemoveEvidence,
   onReviewIncident,
 }: {
   draft: ReportDraft;
@@ -1619,6 +1359,10 @@ function ReportEntryStep({
   fromTriage: boolean;
   draftFeedback: string | null;
   copyFeedback: string | null;
+  evidenceItems: ManualEvidenceItem[];
+  evidenceError: string | null;
+  isProcessingEvidence: boolean;
+  validationMessage: string | null;
   onBack: () => void;
   onDraftFieldChange: <K extends keyof ReportDraft>(
     key: K,
@@ -1628,6 +1372,8 @@ function ReportEntryStep({
   onSaveLocalDraft: () => void;
   onDownloadTxt: () => void;
   onCopyToClipboard: () => void;
+  onFilesSelected: (files: FileList | File[]) => void;
+  onRemoveEvidence: (id: string) => void;
   onReviewIncident: () => void;
 }) {
   const isAutoFilled = (field: keyof ReportDraft) =>
@@ -1636,8 +1382,8 @@ function ReportEntryStep({
   return (
     <div>
       <StepHeader
-        title="Start a Report"
-        description="Write the story once and save a local draft. This frontend-only report entry screen does not submit anything to SafeSpeak or an external service."
+        title="Tell us what happened"
+        description="Write your incident description, attach supporting files, or both. Nothing is submitted, shared, or sent anywhere in this prototype — you review everything before continuing."
       />
 
       {overview ? (
@@ -1791,15 +1537,29 @@ function ReportEntryStep({
                 What happened?
                 {isAutoFilled("summary") ? <AutoFilledBadge /> : null}
               </span>
+              <span className="mt-2 flex flex-wrap gap-1.5" aria-hidden="true">
+                {INCIDENT_PROMPT_CHIPS.map((chip) => (
+                  <span
+                    key={chip}
+                    className="rounded-full bg-[#f1f5f9] px-2.5 py-1 text-[11px] font-semibold text-[#64748b]"
+                  >
+                    {chip}
+                  </span>
+                ))}
+              </span>
               <textarea
                 id="incident-summary"
                 value={draft.summary}
                 onChange={(event) =>
                   onDraftFieldChange("summary", event.target.value)
                 }
-                placeholder="Describe what happened in your own words. Include only what feels useful to capture right now."
+                placeholder="Describe what happened in your own words. The prompts above are suggestions, not required fields — write as much or as little as feels useful."
                 className="mt-2 min-h-48 w-full resize-y rounded-[14px] border border-[#dbe5f0] bg-white p-4 text-sm leading-7 text-[#1f2a3a] placeholder:text-[#94a3b8] focus:outline-none focus:ring-2 focus:ring-[#0f5d9f]"
               />
+              <span className="mt-1 block text-xs leading-5 text-[#94a3b8]">
+                Your words are kept exactly as written. Line breaks and any
+                language or script you use are preserved.
+              </span>
             </label>
 
             <label htmlFor="incident-safety" className="block">
@@ -1932,16 +1692,13 @@ function ReportEntryStep({
             </p>
           </Card>
 
-          <Card className="rounded-[14px] p-4">
-            <h2 className="font-bold text-[#1f2a3a]">Future inputs</h2>
-            <div className="mt-3 grid gap-2">
-              <DisabledInputShell icon={<Mic size={16} aria-hidden="true" />} label="Voice capture" />
-              <DisabledInputShell icon={<Upload size={16} aria-hidden="true" />} label="Supporting documents" />
-            </div>
-            <p className="mt-3 text-xs leading-5 text-[#60718a]">
-              These controls are not connected in this frontend-only phase.
-            </p>
-          </Card>
+          <EvidenceUploadPanel
+            evidenceItems={evidenceItems}
+            evidenceError={evidenceError}
+            isProcessingEvidence={isProcessingEvidence}
+            onFilesSelected={onFilesSelected}
+            onRemoveEvidence={onRemoveEvidence}
+          />
 
           {overview && overview.services.length > 0 ? (
             <Card
@@ -2029,10 +1786,20 @@ function ReportEntryStep({
         </p>
       </Card>
 
+      {validationMessage ? (
+        <p
+          className="mt-4 text-sm font-semibold text-[#b42318]"
+          role="alert"
+          aria-live="assertive"
+        >
+          {validationMessage}
+        </p>
+      ) : null}
+
       <div className="mt-8 flex flex-col-reverse gap-3 border-t border-[#e3ebf5] pt-5 sm:flex-row sm:items-center sm:justify-between">
         <Button variant="outline" onClick={onBack} className="min-h-11 rounded-full">
           <ArrowLeft className="mr-2 size-4" aria-hidden="true" />
-          {fromTriage ? "Back to Triage" : "Back to hub"}
+          {fromTriage ? "Back to Triage" : "Back to Community"}
         </Button>
         <Button
           onClick={onReviewIncident}
@@ -2046,21 +1813,125 @@ function ReportEntryStep({
   );
 }
 
-function DisabledInputShell({
-  icon,
-  label,
+function EvidenceUploadPanel({
+  evidenceItems,
+  evidenceError,
+  isProcessingEvidence,
+  onFilesSelected,
+  onRemoveEvidence,
 }: {
-  icon: React.ReactNode;
-  label: string;
+  evidenceItems: ManualEvidenceItem[];
+  evidenceError: string | null;
+  isProcessingEvidence: boolean;
+  onFilesSelected: (files: FileList | File[]) => void;
+  onRemoveEvidence: (id: string) => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
+
+  function openFileBrowser(): void {
+    fileInputRef.current?.click();
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    setIsDragActive(false);
+    if (event.dataTransfer.files?.length) {
+      onFilesSelected(event.dataTransfer.files);
+    }
+  }
+
   return (
-    <div className="flex min-h-11 items-center justify-between gap-3 rounded-[12px] border border-[#e3e8ef] bg-[#f8fafc] px-3 text-sm font-semibold text-[#94a3b8]">
-      <span className="flex items-center gap-2">
-        {icon}
-        {label}
-      </span>
-      <span className="text-xs">Later</span>
-    </div>
+    <Card className="rounded-[14px] p-4" data-testid="evidence-upload-panel">
+      <h2 className="flex items-center gap-2 font-bold text-[#1f2a3a]">
+        <Upload className="size-4 text-[#0f5d9f]" aria-hidden="true" />
+        Supporting evidence
+        <span className="font-normal text-[#94a3b8]">(optional)</span>
+      </h2>
+      <p className="mt-1 text-xs leading-5 text-[#60718a]">
+        Attach {MANUAL_EVIDENCE_ACCEPTED_FORMATS_LABEL.toLowerCase()}. Up to{" "}
+        {MANUAL_EVIDENCE_LIMITS.maxFileCount} files, {formatFileSize(MANUAL_EVIDENCE_LIMITS.maxFileSizeBytes)}{" "}
+        each. Files stay on this device — nothing is uploaded to a server in
+        this prototype.
+      </p>
+
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openFileBrowser}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openFileBrowser();
+          }
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setIsDragActive(true);
+        }}
+        onDragLeave={() => setIsDragActive(false)}
+        onDrop={handleDrop}
+        className={cn(
+          "mt-3 flex min-h-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-[12px] border-2 border-dashed p-4 text-center transition",
+          isDragActive
+            ? "border-[#0f5d9f] bg-[#f2f8fd]"
+            : "border-[#cbd8e6] bg-[#f8fbff] hover:bg-[#f2f8fd]"
+        )}
+        aria-label="Browse or drop files to attach as supporting evidence"
+      >
+        <Upload className="size-5 text-[#0f5d9f]" aria-hidden="true" />
+        <span className="text-xs font-semibold text-[#0f5d9f]">
+          Browse files or drag and drop
+        </span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={MANUAL_EVIDENCE_ACCEPT_ATTRIBUTE}
+          className="sr-only"
+          onChange={(event) => {
+            if (event.target.files?.length) {
+              onFilesSelected(event.target.files);
+            }
+            event.target.value = "";
+          }}
+        />
+      </div>
+
+      {isProcessingEvidence ? (
+        <p className="mt-3 flex items-center gap-2 text-xs font-semibold text-[#0f5d9f]" aria-live="polite">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          Preparing attached files...
+        </p>
+      ) : null}
+
+      {evidenceError ? (
+        <p className="mt-3 text-xs font-semibold text-[#b42318]" role="alert">
+          {evidenceError}
+        </p>
+      ) : null}
+
+      {evidenceItems.length > 0 ? (
+        <div className="mt-3 grid gap-2" aria-label="Attached files">
+          {evidenceItems.map((item) => (
+            <EvidenceAttachmentCard
+              key={item.id}
+              item={item}
+              onRemove={onRemoveEvidence}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-xs leading-5 text-[#94a3b8]">
+          No files attached yet.
+        </p>
+      )}
+
+      <p className="mt-3 text-[11px] italic leading-5 text-[#94a3b8]">
+        File-content extraction is simulated in this prototype — attached
+        files are not analysed, transcribed, or read by AI.
+      </p>
+    </Card>
   );
 }
 

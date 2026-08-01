@@ -35,6 +35,7 @@ import {
   triggerQuickExit,
 } from "@/lib/safety";
 import { getAuthSession, getCurrentUser } from "@/lib/auth";
+import { getPersonInitials } from "@/lib/user-identity";
 import { cn } from "@/lib/utils";
 
 import type { DashboardTab, HomeView } from "./dashboard-types";
@@ -194,7 +195,7 @@ function Sidebar({
 
       <div className="mt-auto">
         <NavItem
-          href="/dashboard/settings"
+          href="/profile"
           icon={<IconSettingsFilled size={12} />}
           label="My SafeSpeak"
           active={activeTab === "settings"}
@@ -296,7 +297,7 @@ function MobileDashboardNav({
         active={isLearningActive}
       />
       <MobileNavItem
-        href="/dashboard/settings"
+        href="/profile"
         icon={<IconSettingsFilled size={15} />}
         label="My SafeSpeak"
         active={activeTab === "settings"}
@@ -419,14 +420,23 @@ function EmergencyToolbar({ skipUserLookup = false }: { skipUserLookup?: boolean
         </span>
       </div>
 
-      <div className="self-end text-right">
-        <p className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[#93a3b8]">
-          {t("dashboard.toolbar.welcomeBack")}
-        </p>
-        <p className="max-w-[180px] truncate text-sm font-bold text-[#1f2a3a]">
-          {userName ?? "SafeSpeak User"}
-        </p>
-      </div>
+      <Link
+        href="/profile"
+        aria-label={`Open your profile — signed in as ${userName ?? "SafeSpeak User"}`}
+        className="group flex items-center gap-2 self-end rounded-full py-1 pl-1 pr-3 text-right transition hover:bg-white/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b65d8]"
+      >
+        <div>
+          <p className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[#93a3b8]">
+            {t("dashboard.toolbar.welcomeBack")}
+          </p>
+          <p className="max-w-[180px] truncate text-sm font-bold text-[#1f2a3a]">
+            {userName ?? "SafeSpeak User"}
+          </p>
+        </div>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0b65d8] text-[11px] font-extrabold text-white transition group-hover:bg-[#0757bb]">
+          {getPersonInitials(userName)}
+        </span>
+      </Link>
     </div>
   );
 }

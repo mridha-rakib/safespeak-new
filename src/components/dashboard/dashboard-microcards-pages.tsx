@@ -34,6 +34,12 @@ import {
   listPublishedMicroEducationByCategory,
   listPublishedMicroEducationCategories,
 } from "@/lib/microeducation";
+import {
+  MICROCARD_LIBRARY_MOCK_MODE,
+  getMockMicrocardCategories,
+  getMockMicrocardsByCategory,
+  isMicrocardLibraryUnavailable,
+} from "@/lib/mock/microcard-library-adapter";
 import { cn } from "@/lib/utils";
 
 import { interFont } from "./dashboard-shared";
@@ -696,10 +702,22 @@ function MicroCardsPage() {
       setLoadError(null);
 
       try {
-        const items = await listPublishedMicroEducationCategories();
+        const items = MICROCARD_LIBRARY_MOCK_MODE
+          ? getMockMicrocardCategories()
+          : await listPublishedMicroEducationCategories();
 
         if (isMounted) {
           setCategories(items);
+
+          if (
+            MICROCARD_LIBRARY_MOCK_MODE &&
+            items.length === 0 &&
+            isMicrocardLibraryUnavailable()
+          ) {
+            setLoadError(
+              "Micro-card content isn't available right now. Try refreshing this page."
+            );
+          }
         }
       } catch (error) {
         if (isMounted) {
@@ -755,7 +773,9 @@ function MicroCardsPage() {
       setLoadError(null);
 
       try {
-        const items = await listPublishedMicroEducationByCategory(activeCategoryId);
+        const items = MICROCARD_LIBRARY_MOCK_MODE
+          ? getMockMicrocardsByCategory(activeCategoryId)
+          : await listPublishedMicroEducationByCategory(activeCategoryId);
 
         if (isMounted) {
           setAdminCards(items);

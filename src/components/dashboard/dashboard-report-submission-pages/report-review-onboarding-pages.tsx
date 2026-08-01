@@ -24,11 +24,14 @@ import { Card } from "@/components/ui/card";
 import { ConsentRequiredCard } from "@/components/consent/consent-required-card";
 import { useConsentGate } from "@/hooks/use-consent-gate";
 import { consentRequirements } from "@/lib/consent";
+import { resolveSelectedReportDestination } from "@/lib/mock/report-destination-resolver";
+import { REPORT_DESTINATION_TRISTATE_LABEL } from "@/lib/mock/report-destination-view-model";
 import type { ReportBuilderOverview } from "@/lib/report-builder-view-model";
 import { formatTimestamp, toTitleCase } from "@/lib/report-draft-text";
 import {
   getResolvedReportFlowDraft,
   mergeReportFlowDraft,
+  updateSelectedReportDestination,
 } from "@/lib/report-flow";
 import {
   AU_JURISDICTIONS,
@@ -409,11 +412,18 @@ function DestinationStage({
   onContinue: () => void;
 }) {
   const resolvedDraft = getResolvedReportFlowDraft();
+  // The governed mock destination Triage's "Use this reporting option"
+  // selected (if any) — shown as its own section below, never merged into
+  // `destinations` (the backend/manual list), so the two catalogues are
+  // never mixed in one list.
+  const triageResolution = resolveSelectedReportDestination(resolvedDraft);
+  const triageSelectionIsStaleMock =
+    resolvedDraft?.selectedDestinationSource === "mock_bundle" && triageResolution.status !== "found";
   const [jurisdiction, setJurisdiction] = useState(
     resolvedDraft?.jurisdiction ?? "auto"
   );
   const [selectedId, setSelectedId] = useState<string | null>(
-    resolvedDraft?.selectedDestinationId ?? null
+    triageSelectionIsStaleMock ? null : (resolvedDraft?.selectedDestinationId ?? null)
   );
   const [destinations, setDestinations] = useState<DestinationOption[]>([]);
   const [source, setSource] = useState<"backend" | "manual">("manual");
@@ -463,11 +473,17 @@ function DestinationStage({
 
   function handleSelect(option: DestinationOption): void {
     setSelectedId(option.id);
-    mergeReportFlowDraft({
-      selectedDestinationId: option.id,
-      selectedDestinationName: option.name,
-      selectedDestinationSource: option.source,
-      jurisdiction,
+    updateSelectedReportDestination({ id: option.id, name: option.name, source: option.source });
+    mergeReportFlowDraft({ jurisdiction });
+  }
+
+  function handleSelectTriageDestination(): void {
+    if (triageResolution.status !== "found") return;
+    setSelectedId(triageResolution.destination.id);
+    updateSelectedReportDestination({
+      id: triageResolution.destination.id,
+      name: triageResolution.destination.name,
+      source: "mock_bundle",
     });
   }
 
@@ -482,6 +498,49 @@ function DestinationStage({
         title="Where would you like to use this report?"
         description="Each destination explains what it can do with the information. Nothing is sent until you confirm."
       />
+
+      {triageResolution.status === "found" ? (
+        <div
+          className={cn(
+            "mt-6 rounded-[14px] border p-4",
+            selectedId === triageResolution.destination.id
+              ? "border-[#0f5d9f] bg-[#f2f8fd] ring-2 ring-[#0f5d9f]/20"
+              : "border-[#dbe5f0] bg-white"
+          )}
+          data-testid="triage-selected-destination"
+        >
+          <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[#0f5d9f]">
+            Selected from Triage
+          </p>
+          <div className="mt-1 flex items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-bold text-[#1f2a3a]">{triageResolution.destination.name}</p>
+              <p className="mt-1 text-xs leading-5 text-[#60718a]">{triageResolution.destination.description}</p>
+            </div>
+            {selectedId === triageResolution.destination.id ? (
+              <span
+                role="status"
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-[#0f5d9f] text-white"
+              >
+                <Check size={14} aria-hidden="true" />
+              </span>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={handleSelectTriageDestination}
+                className="min-h-9 shrink-0 rounded-full text-xs"
+              >
+                Use this destination
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : triageSelectionIsStaleMock ? (
+        <div className="mt-6 rounded-[14px] border border-[#f2d8b0] bg-[#fffaf2] p-4 text-sm text-[#9a5b12]" role="status">
+          The reporting option you previously selected from Triage is no longer available. Choose another option
+          below.
+        </div>
+      ) : null}
 
       <label htmlFor="destination-jurisdiction" className="mt-6 block max-w-sm">
         <span className="flex items-center gap-1.5 text-sm font-bold text-[#1f2a3a]">
@@ -605,6 +664,9 @@ function ConsentStage({
   onContinue: () => void;
 }) {
   const resolvedDraft = getResolvedReportFlowDraft();
+  const resolution = resolveSelectedReportDestination(resolvedDraft);
+  const selectedMockDestinationUnavailable =
+    resolvedDraft?.selectedDestinationSource === "mock_bundle" && resolution.status !== "found";
   const {
     pendingConsentRequirement,
     isGrantingConsent,
@@ -702,6 +764,26 @@ function ConsentStage({
     );
   }
 
+  if (selectedMockDestinationUnavailable) {
+    return (
+      <div>
+        <OnboardingStepHeader
+          title="Consent"
+          description="Your previously selected reporting option is no longer available."
+        />
+        <div className="mt-6 rounded-[14px] border border-[#f2d8b0] bg-[#fffaf2] p-4 text-sm text-[#9a5b12]" role="status">
+          The reporting option you selected is no longer available. Your report draft has been kept — choose another
+          reporting option to continue.
+        </div>
+        <StageActions
+          onBack={onBack}
+          onContinue={onBack}
+          continueLabel="Choose another reporting option"
+        />
+      </div>
+    );
+  }
+
   return (
     <div>
       <OnboardingStepHeader
@@ -715,8 +797,24 @@ function ConsentStage({
           Selected destination
         </h2>
         <p className="mt-2 text-sm font-semibold text-[#1f2a3a]">
-          {resolvedDraft.selectedDestinationName ?? "Selected destination"}
+          {resolution.status === "found" ? resolution.destination.name : (resolvedDraft.selectedDestinationName ?? "Selected destination")}
         </p>
+        {resolution.status === "found" ? (
+          <div className="mt-2 space-y-1 text-xs leading-5 text-[#60718a]">
+            <p>{resolution.destination.destinationType}</p>
+            {resolution.destination.jurisdictions.length > 0 ? (
+              <p>{resolution.destination.jurisdictions.join(", ")}</p>
+            ) : null}
+            <p>
+              <span className="font-semibold text-[#1f2a3a]">Anonymous reporting: </span>
+              {REPORT_DESTINATION_TRISTATE_LABEL[resolution.destination.anonymousReporting]}
+            </p>
+            <p>
+              <span className="font-semibold text-[#1f2a3a]">Emergency suitability: </span>
+              {REPORT_DESTINATION_TRISTATE_LABEL[resolution.destination.emergencySuitability]}
+            </p>
+          </div>
+        ) : null}
         <p className="mt-2 text-xs leading-5 text-[#60718a]">
           Your prepared report (category, what happened, safety status, and
           any optional details you added) will be used to prepare
@@ -724,6 +822,9 @@ function ConsentStage({
           device and in your SafeSpeak account until you take a further
           sharing action.
         </p>
+        {resolution.status === "found" && resolution.destination.publicDisclaimer ? (
+          <p className="mt-2 text-xs leading-5 text-[#94a3b8]">{resolution.destination.publicDisclaimer}</p>
+        ) : null}
       </Card>
 
       <div className="mt-4">
@@ -775,14 +876,23 @@ function ConsentStage({
 /** Stage 6 - Complete */
 function CompleteStage({ onBack }: { onBack: () => void }) {
   const resolvedDraft = getResolvedReportFlowDraft();
+  const resolution = resolveSelectedReportDestination(resolvedDraft);
+  const selectedMockDestinationUnavailable =
+    resolvedDraft?.selectedDestinationSource === "mock_bundle" && resolution.status !== "found";
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  const destinationSummaryValue = selectedMockDestinationUnavailable
+    ? `${resolvedDraft?.selectedDestinationName ?? "Selected destination"} (no longer available)`
+    : resolution.status === "found"
+      ? `${resolution.destination.name} (${resolution.destination.destinationType})`
+      : (resolvedDraft?.selectedDestinationName ?? "Not selected");
 
   function buildSummaryText(): string {
     return [
       "SafeSpeak report - prepared, not sent",
       `Category: ${resolvedDraft?.incidentType ? toTitleCase(resolvedDraft.incidentType) : "Not classified"}`,
       `Prepared: ${formatTimestamp(resolvedDraft?.updatedAt ?? null)}`,
-      `Destination: ${resolvedDraft?.selectedDestinationName ?? "Not selected"}`,
+      `Destination: ${destinationSummaryValue}`,
       "Status: Draft ready - saved locally. Nothing has been sent.",
     ].join("\n");
   }
@@ -835,10 +945,7 @@ function CompleteStage({ onBack }: { onBack: () => void }) {
             label="Prepared"
             value={formatTimestamp(resolvedDraft?.updatedAt ?? null)}
           />
-          <SummaryRow
-            label="Destination"
-            value={resolvedDraft?.selectedDestinationName ?? "Not selected"}
-          />
+          <SummaryRow label="Destination" value={destinationSummaryValue} />
           <SummaryRow label="Status" value="Ready for review - nothing sent" />
         </div>
       </Card>
@@ -945,4 +1052,12 @@ function ReportReviewOnboardingRouter({
   return <CompleteStage onBack={() => onGoToStep(config.previous ?? "consent")} />;
 }
 
-export { ReportReviewOnboardingProgress, ReportReviewOnboardingRouter };
+export {
+  ReportReviewOnboardingProgress,
+  ReportReviewOnboardingRouter,
+  DestinationStage,
+  ConsentStage,
+  CompleteStage,
+  OnboardingStepHeader,
+  StageActions,
+};

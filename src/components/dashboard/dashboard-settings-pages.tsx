@@ -37,6 +37,7 @@ import {
   type ConsentFlags,
 } from "@/lib/consent";
 import { useSafeSpeakProfile } from "@/hooks/use-safespeak-profile";
+import { getAuthSession, getCurrentUser } from "@/lib/auth";
 import {
   getCommunityProfiles,
   getCulturalProfiles,
@@ -136,6 +137,7 @@ export function SettingsPage() {
   const [cultureChoices, setCultureChoices] = useState<string[]>(cultureOptions);
   const [faithChoices, setFaithChoices] = useState<string[]>(faithOptions);
   const [communityChoices, setCommunityChoices] = useState<string[]>(communityOptions);
+  const [firstName, setFirstName] = useState<string | null>(null);
   const isSpanish =
     (i18n.resolvedLanguage ?? i18n.language ?? "en").toLowerCase() === "es";
   const profileCopy = isSpanish
@@ -215,6 +217,30 @@ export function SettingsPage() {
             ? error.message
             : "Consent settings could not be loaded."
         );
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+    const sessionUser = getAuthSession()?.user;
+
+    if (sessionUser?.fullName) {
+      setFirstName(sessionUser.fullName.trim().split(/\s+/)[0] ?? null);
+    }
+
+    void getCurrentUser()
+      .then((user) => {
+        if (isActive) {
+          const name = user.fullName || user.email;
+          setFirstName(name.trim().split(/\s+/)[0] ?? null);
+        }
+      })
+      .catch(() => {
+        // No valid session — the greeting falls back to a generic one.
       });
 
     return () => {
@@ -356,7 +382,13 @@ export function SettingsPage() {
 
         <div className="mt-4">
           <h1 className="text-4xl font-extrabold leading-[0.9] text-[#0f4f96] sm:text-5xl">
-            {t("dashboard.settings.heyAlex")}
+            {firstName
+              ? isSpanish
+                ? `Hola, ${firstName}!`
+                : `Hey, ${firstName}!`
+              : isSpanish
+                ? "Hola!"
+                : "Hey there!"}
           </h1>
           <p className="mt-1 text-sm text-[#6a7d94]">
             {t("dashboard.settings.secureSpace")}

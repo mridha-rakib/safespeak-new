@@ -1,0 +1,2 @@
+This is a plain-text SafeSpeak test fixture.
+Second line in English.
